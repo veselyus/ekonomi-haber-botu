@@ -97,6 +97,7 @@ def format_digest_messages(
     items: list[EnrichedArticle],
     *,
     now: datetime | None = None,
+    include_empty_categories: bool = False,
 ) -> list[str]:
     """
     Format the daily digest as 3 separate category messages:
@@ -106,7 +107,7 @@ def format_digest_messages(
 
     Each item contains only its explanatory ASD-STE100 headline and clickable source link.
     """
-    if not items:
+    if not items and not include_empty_categories:
         return []
 
     local_now = (now or datetime.now(timezone.utc)).astimezone(TURKEY_TZ)
@@ -116,7 +117,7 @@ def format_digest_messages(
 
     for category in CATEGORY_ORDER:
         cat_items = [x for x in items if x.evaluation.category == category]
-        if not cat_items:
+        if not cat_items and not include_empty_categories:
             continue
 
         cat_header = (
@@ -126,16 +127,21 @@ def format_digest_messages(
         )
         entry_blocks: list[str] = [cat_header]
 
-        for item in cat_items:
-            ev = item.evaluation
-            headline = html.escape(
-                _clean_single_line(ev.turkish_headline or item.raw.title)
-            )
-            source = html.escape(item.raw.source_name)
-            safe_url = html.escape(item.raw.url, quote=True)
+        if not cat_items:
             entry_blocks.append(
-                f'🔹 {headline} — <a href="{safe_url}">{source}</a>'
+                "<i>Son bültenden bu yana eşik değerini aşan yeni bir gelişme bulunmadı.</i>"
             )
+        else:
+            for item in cat_items:
+                ev = item.evaluation
+                headline = html.escape(
+                    _clean_single_line(ev.turkish_headline or item.raw.title)
+                )
+                source = html.escape(item.raw.source_name)
+                safe_url = html.escape(item.raw.url, quote=True)
+                entry_blocks.append(
+                    f'🔹 {headline} — <a href="{safe_url}">{source}</a>'
+                )
 
         category_chunks = _pack_blocks_into_messages(
             entry_blocks, max_len=TELEGRAM_MAX_MESSAGE_LENGTH
@@ -216,11 +222,12 @@ class TelegramNotifier:
                 messages.append(snapshot_msg)
 
         if items:
-            messages.extend(format_digest_messages(items))
-        elif send_empty and not messages:
-            messages.append(
-                "📊 <b>Günlük Ekonomi &amp; Bankacılık Bülteni</b>\n"
-                "Son 24 saatte eşik değerini aşan yeni bir gelişme bulunmadı."
+            messages.extend(
+                format_digest_messages(items, include_empty_categories=True)
+            )
+        elif send_empty:
+            messages.extend(
+                format_digest_messages([], include_empty_categories=True)
             )
 
         if not messages:

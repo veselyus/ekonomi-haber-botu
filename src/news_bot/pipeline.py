@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
 
-from news_bot.analyzer import GeminiNewsAnalyzer
+from news_bot.analyzer import GeminiNewsAnalyzer, enforce_category_domain_rules
 from news_bot.config import Settings
 from news_bot.deduplicator import (
     deduplicate_candidates,
@@ -15,8 +15,8 @@ from news_bot.deduplicator import (
 )
 from news_bot.fetcher import NewsFetcher
 from news_bot.market import MarketDataFetcher
-from news_bot.models import EnrichedArticle, MarketQuote, NewsCategory
-from news_bot.notifier import TURKEY_TZ, TelegramNotifier, format_market_snapshot
+from news_bot.models import EnrichedArticle, MarketQuote, NewsCategory, RawArticle
+from news_bot.notifier import CATEGORY_ORDER, TURKEY_TZ, TelegramNotifier, format_market_snapshot
 from news_bot.prefilter import prefilter_articles
 from news_bot.sources import load_active_sources
 from news_bot.storage import ArticleStorage
@@ -35,6 +35,55 @@ class ScanStats:
     critical_sent: int
     queued_for_digest: int
     ignored_irrelevant: int
+
+
+def _candidate_sort_key(item: RawArticle) -> tuple[int, float]:
+    """Sort key preferring higher authority tier and fresher timestamps (graceful on missing pubDate)."""
+    effective_ts = (
+        item.published_at.timestamp()
+        if item.published_at is not None
+        else (item.fetched_at.timestamp() - 3600.0)
+    )
+    return (item.authority_tier, -effective_ts)
+
+
+def select_balanced_candidates(
+    candidates: list[RawArticle],
+    *,
+    max_total: int,
+) -> list[RawArticle]:
+    """
+    Select up to max_total candidates with balanced representation across
+    TR_BANKING, TR_ECONOMY, and WORLD_ECONOMY so high-frequency global feeds
+    can never starve Turkish economy or banking sources.
+    """
+    if len(candidates) <= max_total:
+        return sorted(candidates, key=_candidate_sort_key)
+
+    per_bucket = max(1, max_total // len(CATEGORY_ORDER))
+    selected: list[RawArticle] = []
+    leftovers: list[RawArticle] = []
+
+    for category in CATEGORY_ORDER:
+        bucket = sorted(
+            (c for c in candidates if c.default_category == category),
+            key=_candidate_sort_key,
+        )
+        selected.extend(bucket[:per_bucket])
+        leftovers.extend(bucket[per_bucket:])
+
+    other_items = sorted(
+        (c for c in candidates if c.default_category not in CATEGORY_ORDER),
+        key=_candidate_sort_key,
+    )
+    leftovers.extend(other_items)
+    leftovers.sort(key=_candidate_sort_key)
+
+    remaining_slots = max_total - len(selected)
+    if remaining_slots > 0:
+        selected.extend(leftovers[:remaining_slots])
+
+    return selected
 
 
 def determine_due_digest_slot(now_utc: datetime | None = None) -> str | None:
@@ -88,14 +137,10 @@ class NewsPipeline:
             fuzzy_threshold=self._settings.fuzzy_duplicate_threshold,
         )
 
-        if len(candidates) > self._settings.max_candidates_per_scan:
-            candidates.sort(
-                key=lambda item: (
-                    item.authority_tier,
-                    -(item.published_at.timestamp() if item.published_at else 0.0),
-                )
-            )
-            candidates = candidates[: self._settings.max_candidates_per_scan]
+        candidates = select_balanced_candidates(
+            candidates,
+            max_total=self._settings.max_candidates_per_scan,
+        )
         logger.info(
             "Önizleme Özeti -> Çekilen: %d | Clickbait/Eski Atılan: %d | Mükerrer Atılan: %d | Gemini Adayı: %d",
             len(raw_articles),
@@ -149,14 +194,10 @@ class NewsPipeline:
             fuzzy_threshold=self._settings.fuzzy_duplicate_threshold,
         )
 
-        if len(candidates) > self._settings.max_candidates_per_scan:
-            candidates.sort(
-                key=lambda item: (
-                    item.authority_tier,
-                    -(item.published_at.timestamp() if item.published_at else 0.0),
-                )
-            )
-            candidates = candidates[: self._settings.max_candidates_per_scan]
+        candidates = select_balanced_candidates(
+            candidates,
+            max_total=self._settings.max_candidates_per_scan,
+        )
 
         logger.info(
             "Huni Özeti -> Çekilen: %d | Ön Eleme Atılan: %d | Mükerrer Atılan: %d | Yeni Aday: %d",
@@ -295,8 +336,17 @@ class NewsPipeline:
                 key=lambda x: x.evaluation.importance_score, reverse=True
             )
 
+        # Re-verify domain rules on queued items (protects against any legacy misclassified cache rows)
+        cleaned_pending: list[EnrichedArticle] = []
+        for item in pending:
+            repaired_ev = enforce_category_domain_rules(item.raw, item.evaluation)
+            if repaired_ev.is_relevant and repaired_ev.category != NewsCategory.IRRELEVANT:
+                cleaned_pending.append(
+                    item.model_copy(update={"evaluation": repaired_ev})
+                )
+
         unique_pending = deduplicate_enriched_articles(
-            pending,
+            cleaned_pending,
             fuzzy_threshold=self._settings.fuzzy_duplicate_threshold,
         )
         logger.info(

@@ -42,17 +42,27 @@ def _extract_entry_datetime(entry: feedparser.FeedParserDict) -> datetime | None
             except (OverflowError, TypeError, ValueError):
                 continue
 
-    for text_key in ("published", "updated"):
+    for text_key in ("published", "updated", "pubDate", "dc_date"):
         raw_date = entry.get(text_key)
         if isinstance(raw_date, str) and raw_date.strip():
+            cleaned_date = raw_date.strip()
             try:
-                dt = parsedate_to_datetime(raw_date.strip())
+                dt = parsedate_to_datetime(cleaned_date)
                 return (
                     dt.astimezone(timezone.utc)
                     if dt.tzinfo is not None
                     else dt.replace(tzinfo=timezone.utc)
                 )
             except (TypeError, ValueError):
+                pass
+            try:
+                iso_dt = datetime.fromisoformat(cleaned_date.replace("Z", "+00:00"))
+                return (
+                    iso_dt.astimezone(timezone.utc)
+                    if iso_dt.tzinfo is not None
+                    else iso_dt.replace(tzinfo=timezone.utc)
+                )
+            except ValueError:
                 continue
     return None
 
@@ -227,6 +237,7 @@ class NewsFetcher:
                     article_id=compute_article_id(canonical),
                     source_id=source.id,
                     source_name=effective_source_name,
+                    default_category=source.default_category,
                     authority_tier=source.authority_tier,
                     language=source.language,
                     title=title,
@@ -274,6 +285,7 @@ class NewsFetcher:
                     article_id=compute_article_id(canonical),
                     source_id=source.id,
                     source_name=source.name,
+                    default_category=source.default_category,
                     authority_tier=source.authority_tier,
                     language=source.language,
                     title=title,

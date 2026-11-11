@@ -21,18 +21,224 @@ from news_bot.models import (
     NewsCategory,
     RawArticle,
 )
+from news_bot.prefilter import normalize_turkish_lower
 
 logger = logging.getLogger(__name__)
 
+BANKING_DOMAIN_KEYWORDS: tuple[str, ...] = (
+    "banka",
+    "bddk",
+    "tbb",
+    "tmsf",
+    "tkbb",
+    "kredi",
+    "mevduat",
+    "sendikasyon",
+    "zorunlu karşılık",
+    "sermaye yeterlili",
+    "takipteki alacak",
+    "faktoring",
+    "leasing",
+    "finansal kiralama",
+    "katılım finans",
+    "kmh",
+    "akbank",
+    "garanti bbva",
+    "iş bankası",
+    "yapı kredi",
+    "vakıfbank",
+    "ziraat",
+    "halkbank",
+    "denizbank",
+    "qnb",
+    "türk ekonomi bankası",
+    "şekerbank",
+    "albaraka",
+    "kuveyt türk",
+    "tskb",
+    "hsbc",
+    "ing türkiye",
+    "odeabank",
+    "fibabanka",
+    "alternatif bank",
+    "anadolubank",
+    "burgan",
+    "enpara",
+    "eximbank",
+)
+
+NON_BANK_COMPANIES: tuple[str, ...] = (
+    "turkcell",
+    "türk telekom",
+    "vodafone",
+    "türk hava yolları",
+    "pegasus",
+    "tüpraş",
+    "petkim",
+    "socar",
+    "aselsan",
+    "havelsan",
+    "tusaş",
+    "roketsan",
+    "ereğli demir",
+    "erdemir",
+    "kardemir",
+    "arçelik",
+    "beko",
+    "vestel",
+    "ford otosan",
+    "tofaş",
+    "şişecam",
+    "migros",
+    "bim birleşik",
+    "bimaş",
+    "şok market",
+    "ülker",
+    "anadolu efes",
+    "coca-cola içecek",
+    "hektaş",
+    "astor enerji",
+    "enerjisa",
+    "zorlu enerji",
+    "koza altın",
+    "emlak konut",
+    "türk traktör",
+    "otokar",
+    "tav havalimanları",
+)
+
+CORPORATE_EARNINGS_NOISE_KEYWORDS: tuple[str, ...] = (
+    "konsolide gelir",
+    "üçüncü çeyrek",
+    "ikinci çeyrek",
+    "birinci çeyrek",
+    "dördüncü çeyrek",
+    "3. çeyrek",
+    "2. çeyrek",
+    "1. çeyrek",
+    "4. çeyrek",
+    "çeyrek bilanço",
+    "çeyrek finansal",
+    "net kâr",
+    "net kar",
+    "favök",
+    "ebitda",
+    "brüt kâr",
+    "satış geliri",
+    "cirosu",
+    "cirosunu",
+    "temettü",
+    "hisse geri alım",
+    "bedelsiz sermaye",
+)
+
+TR_MACRO_KEYWORDS: tuple[str, ...] = (
+    "tüik",
+    "tcmb",
+    "merkez bankası",
+    "enflasyon",
+    "tüfe",
+    "üfe",
+    "gsyh",
+    "cari açık",
+    "cari denge",
+    "ihracat",
+    "ithalat",
+    "dış ticaret",
+    "işsizlik",
+    "istihdam",
+    "sanayi üretimi",
+    "hazine",
+    "maliye",
+    "bütçe",
+    "vergi",
+    "ovp",
+    "orta vadeli program",
+    "asgari ücret",
+    "rezerv",
+    "moody",
+    "fitch",
+    "s&p",
+)
+
+
+def enforce_category_domain_rules(
+    raw: RawArticle,
+    evaluation: ArticleEvaluation,
+) -> ArticleEvaluation:
+    """
+    Deterministic post-LLM domain guard:
+    1) Reject non-bank single-company corporate earnings/revenue (e.g., Turkcell consolidated revenue)
+       from polluting TR_BANKING or TR_ECONOMY.
+    2) Require genuine banking/regulator entities for TR_BANKING; reclassify mislabeled
+       macro stories to TR_ECONOMY instead of letting source names like 'Banka Dünyası' mislead classification.
+    """
+    if not evaluation.is_relevant or evaluation.category == NewsCategory.IRRELEVANT:
+        return evaluation
+
+    text = normalize_turkish_lower(
+        f"{raw.title} {raw.summary} {evaluation.turkish_headline}"
+    )
+
+    has_banking_term = any(kw in text for kw in BANKING_DOMAIN_KEYWORDS)
+    has_non_bank_company = any(comp in text for comp in NON_BANK_COMPANIES)
+    has_earnings_noise = any(kw in text for kw in CORPORATE_EARNINGS_NOISE_KEYWORDS)
+    has_tr_macro = any(kw in text for kw in TR_MACRO_KEYWORDS)
+
+    # 1) Non-bank corporate quarterly revenue/profit/KAP news is micro stock noise -> IRRELEVANT
+    if has_non_bank_company and not has_banking_term:
+        if evaluation.category == NewsCategory.TR_BANKING or has_earnings_noise:
+            logger.info(
+                "Banka dışı tekil şirket/bilanço haberi elendi (%s): %s",
+                raw.source_name,
+                evaluation.turkish_headline,
+            )
+            return evaluation.model_copy(
+                update={
+                    "is_relevant": False,
+                    "category": NewsCategory.IRRELEVANT,
+                    "importance_score": min(evaluation.importance_score, 3),
+                }
+            )
+
+    # 2) Strict TR_BANKING verification (ignores source_name so 'Banka Dünyası' non-bank news cannot slip in)
+    if evaluation.category == NewsCategory.TR_BANKING and not has_banking_term:
+        if has_tr_macro and not has_earnings_noise:
+            logger.info(
+                "Bankacılık dışı makro haber TR_ECONOMY kategorisine taşındı: %s",
+                evaluation.turkish_headline,
+            )
+            return evaluation.model_copy(update={"category": NewsCategory.TR_ECONOMY})
+
+        logger.info(
+            "Bankacılık terimi içermeyen sözde TR_BANKING haberi elendi (%s): %s",
+            raw.source_name,
+            evaluation.turkish_headline,
+        )
+        return evaluation.model_copy(
+            update={
+                "is_relevant": False,
+                "category": NewsCategory.IRRELEVANT,
+                "importance_score": min(evaluation.importance_score, 3),
+            }
+        )
+
+    return evaluation
+
+
 EDITOR_SYSTEM_PROMPT = """Sen üst düzey bir ekonomi ve bankacılık haber ajansının Baş Editörüsün.
 Görevin; ham haber listesini inceleyip SIFIR GÜRÜLTÜ ilkesiyle yalnızca gerçekten önemli gelişmeleri seçmek,
-sınıflandırmak, 1-10 arası önem puanı vermek ve net Türkçe yönetici özeti çıkarmaktır.
+sınıflandırmak, 1-10 arası önem puanı vermek ve net Türkçe manşet başlık çıkarmaktır.
 
-KATEGORİ KURALLARI:
-1. TR_ECONOMY: Türkiye makroekonomisi (TCMB para politikası/faiz/rezerv, TÜİK enflasyon/büyüme/işgücü/dış ticaret, Hazine ve Maliye kararları, OVP, vergi düzenlemeleri, kredi derecelendirme kuruluşlarının Türkiye kararları, cari denge, önemli kur/tahvil şokları).
-2. TR_BANKING: Türkiye bankacılık ve finans sektörü (BDDK düzenlemeleri ve haftalık verileri, TBB açıklamaları, zorunlu karşılıklar, kredi/mevduat faiz ve büyüme sınırları, sermaye yeterliliği, takipteki krediler, Türk bankalarının sendikasyon kredileri, tahvil ihraçları, bilançoları ve üst düzey KAP bildirimleri).
-3. WORLD_ECONOMY: Küresel makroekonomi (Fed, ECB, BoJ, BoE faiz ve bilanço kararları, ABD/Avrupa/Çin büyüme ve enflasyon verileri, küresel ticaret tarifeleri/yaptırımlar, enerji ve emtia arz şokları, IMF/Dünya Bankası raporları, küresel bankacılık/finansal istikrar gelişmeleri).
-4. IRRELEVANT: Yukarıdaki 3 alana doğrudan girmeyen veya gürültü niteliğindeki her şey! Magazin, spor, yerel asayiş, hava durumu, burç, bireysel hisse senedi tüyoları, altcoin spekülasyonu, clickbait ("altın kaç TL oldu", "emekliye müjde"), rutin banka personel alım/iş ilanları, mülakat/sınav rehberleri, somut veri içermeyen rutin köşe yazıları ve şirket reklam bültenleri KESİNLİKLE IRRELEVANT olmalı ve is_relevant=false işaretlenmelidir. (Not: Banka Genel Müdür / Yönetim Kurulu gibi üst düzey yönetici atamaları ilgili bankacılık haberidir ve TR_BANKING sayılır.)
+KATEGORİ KURALLARI (ÇOK SIKI UYGULA):
+1. TR_ECONOMY (Türkiye Makroekonomisi): TCMB para politikası/faiz/rezerv/enflasyon raporu, TÜİK enflasyon/GSYH büyüme/sanayi üretimi/işgücü/dış ticaret/güven endeksleri, Hazine ve Maliye Bakanlığı bütçe/borçlanma/vergi kararları, OVP, cari denge, ihracat/ithalat verileri, asgari ücret, kredi derecelendirme kuruluşlarının (Moody's, Fitch, S&P) Türkiye kararları ve Türkiye genelini etkileyen makroekonomik gelişmeler. (Dikkat: Haber kaynağı 'Banka Dünyası' olsa bile haber Türkiye makroekonomisi hakkındaysa TR_ECONOMY seç!)
+2. TR_BANKING (YALNIZCA Türkiye Bankacılık Sektörü): SADECE lisanslı bankalar (mevduat, katılım, kalkınma ve yatırım bankaları), BDDK, TBB, TMSF, TKBB ve doğrudan bankacılık mevzuatı, zorunlu karşılıklar, kredi/mevduat faiz ve büyüme sınırları, kredi kartı/KMH düzenlemeleri, sermaye yeterliliği, takipteki krediler, Türk BANKALARININ sendikasyon kredileri, tahvil ihraçları, banka bilançoları ve banka üst düzey atamaları.
+   - KESİN YASAK: Banka OLMAYAN şirketlerin (ör. Turkcell, Türk Telekom, THY, Tüpraş, Aselsan, BİM, Migros, Ereğli, otomotiv, telekom, havacılık, sanayi, perakende veya enerji şirketleri) konsolide gelir, ciro, net kâr, çeyrek bilanço, temettü veya KAP haberleri ASLA TR_BANKING OLAMAZ! Kaynak adı 'Banka Dünyası' olsa bile içeriği banka olmayan şirket bilançolarına kesinlikle IRRELEVANT ver!
+3. WORLD_ECONOMY (Dünya Makroekonomisi): Fed, ECB, BoJ, BoE faiz ve bilanço kararları, ABD/Avrupa/Çin büyüme, istihdam ve enflasyon verileri, küresel ticaret tarifeleri/yaptırımlar, küresel enerji ve emtia arz şokları, IMF/Dünya Bankası/OECD raporları, küresel bankacılık ve finansal istikrar gelişmeleri.
+4. IRRELEVANT (Kapsam Dışı ve Gürültü): Yukarıdaki 3 alana doğrudan girmeyen her şey! Özellikle:
+   - Banka dışı tekil BIST/şirket çeyrek bilanço, konsolide gelir, ciro, FAVÖK ve hisse haberleri (ör. Turkcell gelir haberi -> KESİNLİKLE IRRELEVANT ve is_relevant=false!),
+   - Magazin, spor, yerel asayiş, hava durumu, burç, bireysel hisse tüyoları, altcoin spekülasyonu,
+   - Clickbait ("altın kaç TL oldu", "emekliye müjde"), rutin banka personel alım/iş ilanları, mülakat rehberleri, somut veri içermeyen köşe yazıları ve şirket reklam bültenleri KESİNLİKLE IRRELEVANT olmalı ve is_relevant=false işaretlenmelidir.
 
 PUANLAMA CETVELİ (importance_score: 1-10):
 - 10 (OLAĞANÜSTÜ KRİTİK - Anlık Alarm): Yalnızca çok büyük resmi kararlar ve şoklar! (TCMB, Fed veya ECB faiz kararı ilanı, BDDK'nın bankacılık/kredi kurallarını değiştiren kritik regülasyon kararı, TÜİK aylık enflasyon veya çeyreklik GSYH büyüme verisi açıklanması, Moody's/Fitch/S&P Türkiye veya Türk bankaları kredi notu değişikliği, olağanüstü finansal şoklar). Sıradan haberlere asla 10 verme!
@@ -146,15 +352,15 @@ class GeminiNewsAnalyzer:
         self,
         *,
         api_key: str,
-        model: str = "gemini-3.5-flash-lite",
-        batch_size: int = 40,
+        model: str = "gemini-3.8-flash",
+        batch_size: int = 45,
         client: genai.Client | None = None,
     ) -> None:
         self._model = model
         self._fallback_model = (
-            "gemini-3.8-flash"
-            if model == "gemini-3.5-flash-lite"
-            else "gemini-3.5-flash-lite"
+            "gemini-3.5-flash-lite"
+            if model == "gemini-3.8-flash"
+            else "gemini-3.8-flash"
         )
         self._batch_size = batch_size
         self._client = client or genai.Client(api_key=api_key)
@@ -187,18 +393,19 @@ class GeminiNewsAnalyzer:
         retry=retry_if_exception_type(Exception),
     )
     def _call_model_once(self, prompt: str, model_name: str) -> Any:
+        thinking = "minimal" if "lite" in model_name else "low"
         return self._client.interactions.create(
             model=model_name,
             input=prompt,
             system_instruction=EDITOR_SYSTEM_PROMPT,
-            generation_config={"thinking_level": "minimal"},
+            generation_config={"thinking_level": thinking},
             response_format={
                 "type": "text",
                 "mime_type": "application/json",
                 "schema": EVALUATION_JSON_SCHEMA,
             },
             store=False,
-            timeout=90.0,
+            timeout=120.0,
         )
 
     def _call_gemini_interaction(self, prompt: str) -> Any:
@@ -253,7 +460,8 @@ class GeminiNewsAnalyzer:
             raise RuntimeError("Gemini API boş yanıt döndürdü.")
 
         parsed = BatchEvaluationResponse.model_validate_json(raw_text)
-        valid_batch_ids = {item.article_id for item in batch}
+        raw_by_id = {item.article_id: item for item in batch}
+        valid_batch_ids = set(raw_by_id.keys())
         by_id: dict[str, ArticleEvaluation] = {}
 
         for evaluation in parsed.evaluations:
@@ -280,6 +488,10 @@ class GeminiNewsAnalyzer:
                         "is_relevant": False,
                         "category": NewsCategory.IRRELEVANT,
                     }
+                )
+            else:
+                evaluation = enforce_category_domain_rules(
+                    raw_by_id[evaluation.article_id], evaluation
                 )
             by_id[evaluation.article_id] = evaluation
 

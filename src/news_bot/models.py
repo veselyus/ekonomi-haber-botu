@@ -60,6 +60,7 @@ class RawArticle(BaseModel):
     article_id: str
     source_id: str
     source_name: str
+    default_category: NewsCategory = NewsCategory.TR_ECONOMY
     authority_tier: int = Field(default=2, ge=1, le=3)
     language: str = "tr"
     title: str

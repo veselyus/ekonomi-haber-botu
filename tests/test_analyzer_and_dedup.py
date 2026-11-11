@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from news_bot.analyzer import GeminiNewsAnalyzer
+from news_bot.analyzer import GeminiNewsAnalyzer, enforce_category_domain_rules
 from news_bot.deduplicator import (
     compute_headline_similarity,
     deduplicate_candidates,
@@ -287,4 +287,63 @@ def test_google_news_aggregator_publisher_suffix_is_stripped() -> None:
     norm_a = normalize_title_for_matching("ABD Merkez Bankası'ndan %4,50 faiz kararı")
     norm_b = normalize_title_for_matching("Fed'den yüzde 4,50 faiz kararı")
     assert compute_headline_similarity(norm_a, norm_b) >= 90.0
+
+
+def test_domain_guard_rejects_turkcell_from_banking_and_repairs_macro_to_tr_economy() -> None:
+    # 1) Non-bank corporate earnings on 'Banka Dünyası' must NEVER pass as TR_BANKING
+    turkcell_raw = _build_raw(
+        "https://bankadunyasi.com/turkcell-konsolide-gelir",
+        "Turkcell yılın üçüncü çeyreğinde konsolide gelirini yüzde 8 artırdı",
+        source_name="Banka Dünyası",
+        tier=2,
+    )
+    wrong_banking_ev = ArticleEvaluation(
+        article_id=turkcell_raw.article_id,
+        is_relevant=True,
+        category=NewsCategory.TR_BANKING,
+        importance_score=8,
+        duplicate_of_id=None,
+        turkish_headline="Turkcell üçüncü çeyrekte konsolide gelirini yüzde 8 artırdı",
+    )
+    fixed_turkcell = enforce_category_domain_rules(turkcell_raw, wrong_banking_ev)
+    assert fixed_turkcell.is_relevant is False
+    assert fixed_turkcell.category == NewsCategory.IRRELEVANT
+
+    # 2) Genuine macro news accidentally tagged TR_BANKING moves cleanly to TR_ECONOMY
+    macro_raw = _build_raw(
+        "https://bankadunyasi.com/tuik-enflasyon",
+        "TÜİK ekim ayı tüketici enflasyonu verilerini açıkladı",
+        source_name="Banka Dünyası",
+        tier=2,
+    )
+    mislabeled_macro = ArticleEvaluation(
+        article_id=macro_raw.article_id,
+        is_relevant=True,
+        category=NewsCategory.TR_BANKING,
+        importance_score=9,
+        duplicate_of_id=None,
+        turkish_headline="TÜİK ekim ayı yıllık enflasyonunu yüzde 48,58 olarak açıkladı",
+    )
+    fixed_macro = enforce_category_domain_rules(macro_raw, mislabeled_macro)
+    assert fixed_macro.is_relevant is True
+    assert fixed_macro.category == NewsCategory.TR_ECONOMY
+
+    # 3) Real bank earnings (Akbank) remain valid TR_BANKING
+    akbank_raw = _build_raw(
+        "https://bankadunyasi.com/akbank-bilanco",
+        "Akbank dokuz aylık dönemde 33 milyar TL konsolide net kâr açıkladı",
+        source_name="Banka Dünyası",
+        tier=2,
+    )
+    akbank_ev = ArticleEvaluation(
+        article_id=akbank_raw.article_id,
+        is_relevant=True,
+        category=NewsCategory.TR_BANKING,
+        importance_score=8,
+        duplicate_of_id=None,
+        turkish_headline="Akbank dokuz aylık dönemde 33 milyar TL net kâr elde etti",
+    )
+    fixed_akbank = enforce_category_domain_rules(akbank_raw, akbank_ev)
+    assert fixed_akbank.is_relevant is True
+    assert fixed_akbank.category == NewsCategory.TR_BANKING
 

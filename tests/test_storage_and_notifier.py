@@ -17,7 +17,7 @@ from news_bot.notifier import (
     format_digest_messages,
     parse_chat_ids,
 )
-from news_bot.pipeline import determine_due_digest_slot
+from news_bot.pipeline import determine_due_digest_slot, select_balanced_candidates
 from news_bot.storage import ArticleStorage
 
 
@@ -161,4 +161,56 @@ def test_parse_chat_ids_supports_multiple_friends_and_channels() -> None:
         "-100987654321",
         "777888",
     ]
+
+
+def test_tr_economy_header_never_disappears_and_balanced_selection_prevents_starvation() -> None:
+    # Even if a scan only found TR_BANKING and WORLD_ECONOMY items,
+    # include_empty_categories=True keeps all 3 headers visible!
+    partial_items = [
+        _sample_enriched(1, category=NewsCategory.TR_BANKING, score=8, queued_for_digest=True),
+        _sample_enriched(2, category=NewsCategory.WORLD_ECONOMY, score=8, queued_for_digest=True),
+    ]
+    msgs = format_digest_messages(partial_items, include_empty_categories=True)
+    assert len(msgs) == 3
+    assert "Türkiye Bankacılık Sektörü" in msgs[0]
+    assert "Türkiye Ekonomisi" in msgs[1]
+    assert "yeni bir gelişme bulunmadı" in msgs[1]
+    assert "Dünya Ekonomisi" in msgs[2]
+
+    # Balanced candidate selection prevents 30 WORLD_ECONOMY items from starving TR_ECONOMY
+    now = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
+    world_flood = [
+        RawArticle(
+            article_id=f"w_{i}",
+            source_id="cnbc",
+            source_name="CNBC",
+            default_category=NewsCategory.WORLD_ECONOMY,
+            authority_tier=2,
+            title=f"Global story {i}",
+            url=f"https://cnbc.com/{i}",
+            canonical_url=f"https://cnbc.com/{i}",
+            published_at=now,
+            fetched_at=now,
+        )
+        for i in range(30)
+    ]
+    tr_econ_undated = [
+        RawArticle(
+            article_id=f"tr_{i}",
+            source_id="ekonomim",
+            source_name="Ekonomim",
+            default_category=NewsCategory.TR_ECONOMY,
+            authority_tier=2,
+            title=f"Türkiye ekonomi haberi {i}",
+            url=f"https://ekonomim.com/{i}",
+            canonical_url=f"https://ekonomim.com/{i}",
+            published_at=None,  # Even without pubDate, TR_ECONOMY must get its quota!
+            fetched_at=now,
+        )
+        for i in range(10)
+    ]
+
+    selected = select_balanced_candidates(world_flood + tr_econ_undated, max_total=30)
+    tr_selected = [x for x in selected if x.default_category == NewsCategory.TR_ECONOMY]
+    assert len(tr_selected) == 10
 
