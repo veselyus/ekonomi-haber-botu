@@ -120,16 +120,34 @@ def test_telegram_formatters_escape_html_and_chunk_long_digests() -> None:
     assert "&lt;Kredi &amp; Mevduat&gt;" in alert_html
     assert "BDDK &amp; Kurum &lt;Test&gt;" in alert_html
     assert 'href="https://www.bddk.org.tr/duyuru/1?a=1&amp;b=2"' in alert_html
-    assert "•" not in alert_html
+    assert "Etki:" not in alert_html
+    assert "aylık büyüme sınırını" not in alert_html  # No body subtext
 
+    # Verify 3 separate category messages in requested order:
+    # 1) Bankacılık  2) Türkiye Ekonomisi  3) Dünya Ekonomisi
+    three_cat_items = [
+        _sample_enriched(1, category=NewsCategory.WORLD_ECONOMY, score=8, queued_for_digest=True),
+        _sample_enriched(2, category=NewsCategory.TR_BANKING, score=9, queued_for_digest=True),
+        _sample_enriched(3, category=NewsCategory.TR_ECONOMY, score=8, queued_for_digest=True),
+    ]
+    three_msgs = format_digest_messages(three_cat_items)
+    assert len(three_msgs) == 3
+    assert "Türkiye Bankacılık Sektörü" in three_msgs[0]
+    assert "Türkiye Ekonomisi" in three_msgs[1]
+    assert "Dünya Ekonomisi" in three_msgs[2]
+    for msg in three_msgs:
+        assert "Etki:" not in msg
+        assert "aylık büyüme sınırını" not in msg
+
+    # Verify single large category also chunks below Telegram 4000-char limit
     many_items = [
         _sample_enriched(
             i,
-            category=NewsCategory.WORLD_ECONOMY if i % 2 else NewsCategory.TR_ECONOMY,
+            category=NewsCategory.TR_BANKING,
             score=8,
             queued_for_digest=True,
         )
-        for i in range(1, 35)
+        for i in range(1, 50)
     ]
     chunks = format_digest_messages(many_items)
     assert len(chunks) >= 2

@@ -1,10 +1,11 @@
-"""Telegram HTML formatter and message delivery client with auto-chunking."""
+"""Telegram HTML formatter and message delivery client with per-category messages."""
 
 from __future__ import annotations
 
 import html
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -16,53 +17,33 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_MESSAGE_LENGTH = 4000  # Margin below Telegram's hard 4096-char limit
 TURKEY_TZ = timezone(timedelta(hours=3))
 
+# User-requested category message order:
+# 1) Bankacılık Sektörü  2) Türkiye Ekonomisi  3) Dünya Ekonomisi
 CATEGORY_ORDER: tuple[NewsCategory, ...] = (
-    NewsCategory.TR_ECONOMY,
     NewsCategory.TR_BANKING,
+    NewsCategory.TR_ECONOMY,
     NewsCategory.WORLD_ECONOMY,
 )
 
 
-def _normalize_plain_paragraph(raw_text: str) -> str:
-    """Strip any stray bullet markers or line breaks into a single clean prose paragraph."""
-    if not raw_text.strip():
-        return ""
-    cleaned_lines = [
-        re.sub(r"^(?:[•\-*]|\d+[.)])\s*", "", line.strip())
-        for line in raw_text.splitlines()
-        if line.strip()
-    ]
-    return re.sub(r"\s+", " ", " ".join(cleaned_lines)).strip()
+def _clean_single_line(raw_text: str) -> str:
+    """Normalize headline text into a clean single line without trailing punctuation clutter."""
+    cleaned = re.sub(r"\s+", " ", raw_text).strip()
+    return re.sub(r"^(?:[•\-*]|\d+[.)])\s*", "", cleaned).strip()
 
 
 def format_critical_alert(item: EnrichedArticle) -> str:
-    """Format an instant critical news alert (score 10) in plain ASD-STE100 Telegram HTML."""
+    """Format an instant critical news alert (score 10) with headline and link only."""
     ev = item.evaluation
     category_label = html.escape(ev.category.display_title)
-    headline = html.escape(ev.turkish_headline or item.raw.title)
+    headline = html.escape(_clean_single_line(ev.turkish_headline or item.raw.title))
     source = html.escape(item.raw.source_name)
     safe_url = html.escape(item.raw.url, quote=True)
-    paragraph = html.escape(_normalize_plain_paragraph(ev.summary_text))
 
-    lines: list[str] = [
-        f"🚨 <b>KRİTİK HABER | {category_label}</b>",
-        f"<b>{headline}</b>",
-    ]
-    if paragraph:
-        lines.append("")
-        lines.append(paragraph)
-
-    if ev.impact_note.strip():
-        lines.append("")
-        lines.append(
-            f"💡 <i>Etki: {html.escape(_normalize_plain_paragraph(ev.impact_note))}</i>"
-        )
-
-    lines.append("")
-    lines.append(
-        f'📌 Kaynak: <b>{source}</b> | <a href="{safe_url}">Habere Git</a>'
+    return (
+        f"🚨 <b>KRİTİK HABER | {category_label}</b>\n\n"
+        f'{headline} — <a href="{safe_url}">{source}</a>'
     )
-    return "\n".join(lines)
 
 
 def format_digest_messages(
@@ -71,53 +52,50 @@ def format_digest_messages(
     now: datetime | None = None,
 ) -> list[str]:
     """
-    Format categorized daily digest messages in clean, bullet-free ASD-STE100 paragraphs.
+    Format the daily digest as 3 separate category messages:
+    1) Türkiye Bankacılık Sektörü
+    2) Türkiye Ekonomisi
+    3) Dünya Ekonomisi
 
-    Automatically splits into multiple messages if total length exceeds Telegram's limit.
+    Each item contains only its explanatory ASD-STE100 headline and clickable source link.
     """
     if not items:
         return []
 
     local_now = (now or datetime.now(timezone.utc)).astimezone(TURKEY_TZ)
-    period_label = (
-        "Günlük Sabah Bülteni" if local_now.hour < 12 else "Günlük Özet Bülteni"
-    )
-    date_str = local_now.strftime("%d.%m.%Y %H:%M")
+    date_str = local_now.strftime("%d.%m.%Y")
 
-    header = (
-        f"📊 <b>EKONOMİ &amp; BANKACILIK ÖZETİ ({period_label})</b>\n"
-        f"🗓 <i>{date_str} (TSİ) — {len(items)} gelişme</i>\n"
-        "━━━━━━━━━━━━━━━━━━━━"
-    )
-
-    blocks: list[str] = [header]
+    all_messages: list[str] = []
 
     for category in CATEGORY_ORDER:
         cat_items = [x for x in items if x.evaluation.category == category]
         if not cat_items:
             continue
 
-        blocks.append(f"\n<b>{html.escape(category.display_title)}</b>")
+        cat_header = (
+            f"<b>{html.escape(category.display_title)}</b>\n"
+            f"🗓 <i>{date_str} | Günlük Bülten</i>\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        )
+        entry_blocks: list[str] = [cat_header]
+
         for item in cat_items:
             ev = item.evaluation
-            headline = html.escape(ev.turkish_headline or item.raw.title)
+            headline = html.escape(
+                _clean_single_line(ev.turkish_headline or item.raw.title)
+            )
             source = html.escape(item.raw.source_name)
             safe_url = html.escape(item.raw.url, quote=True)
-            paragraph = html.escape(_normalize_plain_paragraph(ev.summary_text))
+            entry_blocks.append(
+                f'🔹 {headline} — <a href="{safe_url}">{source}</a>'
+            )
 
-            entry_lines = [f"🔹 <b>{headline}</b>"]
-            if paragraph:
-                entry_lines.append(paragraph)
-            if ev.impact_note.strip():
-                clean_impact = html.escape(_normalize_plain_paragraph(ev.impact_note))
-                entry_lines.append(
-                    f'<i>Etki: {clean_impact}</i> — <a href="{safe_url}">{source}</a>'
-                )
-            else:
-                entry_lines.append(f'<a href="{safe_url}">{source}</a>')
-            blocks.append("\n".join(entry_lines))
+        category_chunks = _pack_blocks_into_messages(
+            entry_blocks, max_len=TELEGRAM_MAX_MESSAGE_LENGTH
+        )
+        all_messages.extend(category_chunks)
 
-    return _pack_blocks_into_messages(blocks, max_len=TELEGRAM_MAX_MESSAGE_LENGTH)
+    return all_messages
 
 
 def _pack_blocks_into_messages(blocks: list[str], *, max_len: int) -> list[str]:
@@ -152,7 +130,7 @@ def parse_chat_ids(raw_chat_ids: str) -> list[str]:
 
 
 class TelegramNotifier:
-    """Delivers formatted HTML alerts and digests via Telegram Bot API."""
+    """Delivers formatted HTML alerts and per-category digests via Telegram Bot API."""
 
     def __init__(
         self,
@@ -182,20 +160,20 @@ class TelegramNotifier:
         *,
         send_empty: bool = False,
     ) -> bool:
-        """Send categorized digest messages. Returns True if delivered (or nothing to send)."""
+        """Send separate category digest messages in order."""
         if not items:
             if send_empty:
                 return self._send_html(
-                    "📊 <b>Ekonomi &amp; Bankacılık Bülteni</b>\n"
-                    "Son dönemde eşik değerini aşan yeni bir önemli gelişme bulunmadı."
+                    "📊 <b>Günlük Ekonomi &amp; Bankacılık Bülteni</b>\n"
+                    "Son 24 saatte eşik değerini aşan yeni bir gelişme bulunmadı."
                 )
             logger.info("Bülten kuyruğunda gönderilecek yeni haber yok; sessiz kalındı.")
             return False
 
         messages = format_digest_messages(items)
-        for index, msg in enumerate(messages, start=1):
-            if len(messages) > 1:
-                msg = f"{msg}\n\n<i>({index}/{len(messages)})</i>"
+        for index, msg in enumerate(messages):
+            if index > 0 and not self._dry_run:
+                time.sleep(0.3)
             if not self._send_html(msg):
                 return False
         return True
@@ -239,4 +217,3 @@ class TelegramNotifier:
                     )
 
         return any_succeeded
-

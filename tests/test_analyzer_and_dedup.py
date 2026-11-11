@@ -99,12 +99,7 @@ def test_gemini_analyzer_parses_structured_output_and_suppresses_cross_lang_dupl
                 "category": "WORLD_ECONOMY",
                 "importance_score": 10,
                 "duplicate_of_id": "",
-                "turkish_headline": "Fed Politika Faizini Sabit Tuttu",
-                "summary_text": (
-                    "Fed politika faiz aralığını değiştirmedi. "
-                    "Banka enflasyon düşene kadar mevcut duruşu koruyacak."
-                ),
-                "impact_note": "Bu karar küresel dolar likiditesini dengeler.",
+                "turkish_headline": "Fed politika faizini yüzde 4,50-4,75 aralığında sabit tuttu",
             },
             {
                 "article_id": tr_copy.article_id,
@@ -112,9 +107,7 @@ def test_gemini_analyzer_parses_structured_output_and_suppresses_cross_lang_dupl
                 "category": "WORLD_ECONOMY",
                 "importance_score": 9,
                 "duplicate_of_id": fed_official.article_id,
-                "turkish_headline": "Fed Faizi Değiştirmedi",
-                "summary_text": "Fed politika faizini sabit tuttu.",
-                "impact_note": "",
+                "turkish_headline": "Fed politika faizini değiştirmedi",
             },
         ]
     }

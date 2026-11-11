@@ -15,9 +15,10 @@
 3. **Otorite Öncelikli Tekilleştirme (`src/news_bot/deduplicator.py` & `storage.py`)**
    * `SQLite` ve `RapidFuzz` ile aynı olayı anlatan haberleri karşılaştırır; resmi kurum duyurularına (`Tier 1`) öncelik verir.
    * Farklı dillerdeki aynı haberleri (ör. Fed'in İngilizce duyurusu ile yerel basındaki Türkçe çevirisi) Gemini değerlendirme katmanında `duplicate_of_id` ile yakalar.
-4. **Gemini Baş Editör & Akıllı Teslimat (`analyzer.py` & `notifier.py`)**
-   * **Sabah 08:00 TSİ Tek Günlük Bülten (`7–9` puan):** Gün boyu ve gece biriken tüm önemli Türkiye ekonomisi, bankacılık ve dünya ekonomisi gelişmeleri her sabah **08:00 TSİ**'de 3 kategori altında derli toplu tek bülten halinde gönderilir.
-   * **Olağanüstü Kritik Karar Alarmı (`10/10` puan):** Saat **11:00 TSİ** (TÜİK verileri sonrası), **15:00 TSİ** (TCMB/ECB kararları sonrası) ve **22:30 TSİ** (Fed/Kredi notu kararları sonrası) yapılan kontrollerde yalnızca `10/10` puanlık olağanüstü resmi kararlar varsa anında `🚨 KRİTİK HABER` kartıyla iletilir; aksi halde kanal sessiz kalır.
+4. **Gemini Baş Editör & 3 Ayrı Kategori Bülteni (`analyzer.py` & `notifier.py`)**
+   * **ASD-STE100 Açıklayıcı Manşetler:** Alt metin veya yorum kalabalığı olmadan, her haber sonucu ve rakamı doğrudan veren sade ve etken çatılı tek bir manşet başlık + tıklanabilir kaynak bağlantısı olarak sunulur.
+   * **Sabah 08:00 TSİ 3 Ayrı Kategori Mesajı (`7–9` puan):** Biriken haberler her sabah **08:00 TSİ**'de sırasıyla **1) Türkiye Bankacılık Sektörü**, **2) Türkiye Ekonomisi** ve **3) Dünya Ekonomisi** olmak üzere 3 ayrı mesaj halinde gönderilir.
+   * **Olağanüstü Kritik Karar Alarmı (`10/10` puan):** Saat **11:00 TSİ**, **15:00 TSİ** ve **22:30 TSİ** kontrollerinde yalnızca `10/10` puanlık olağanüstü resmi kararlar varsa anında `🚨 KRİTİK HABER` mesajıyla iletilir; aksi halde kanal sessiz kalır.
    * **1–6 Puan / Kapsam Dışı:** Veritabanına işlenip sessizce elenir; bir sonraki taramada tekrar değerlendirilmez.
 
 ---

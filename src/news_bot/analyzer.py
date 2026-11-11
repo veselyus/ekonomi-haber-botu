@@ -43,18 +43,17 @@ MÜKERRER HABER KURALI (duplicate_of_id):
 - Aynı listede (farklı dilde veya farklı kaynakta olsa bile, örn. Fed'in İngilizce duyurusu ile Bloomberg HT'nin Türkçe haberi) AYNI OLAYI anlatan birden fazla haber varsa:
   En yetkili kaynağa (authority_tier=1 resmi kurum öncelikli) tam değerlendirme yap (duplicate_of_id=""), diğer kopyalarda ise duplicate_of_id alanına o ana haberin article_id değerini yaz.
 
-ÖZET VE DİL KURALLARI (ASD-STE100 BASİTLEŞTİRİLMİŞ TEKNİK DİL STANDARDI):
-Tüm başlık ve özetleri ASD-STE100 (Simplified Technical Language) prensiplerini Türkçeye uyarlayarak yaz:
-1. Madde işareti ('-', '•', '*', numara) ve alt satır KESİNLİKLE KULLANMA. Özeti (summary_text) düz ve tek bir kısa paragraf olarak yaz.
-2. Her cümlede YALNIZCA TEK BİR FİKİR / BİLGİ ver. Bağlaçlarla uzatılmış veya yan cümlecikli ("-erek", "-arak", "-dığından dolayı", "yapılan açıklamada ... belirtilirken") karmaşık cümleler kurma.
-3. Cümleler çok kısa olsun (en fazla 14-18 kelime). Toplam summary_text alanı 2 veya en fazla 3 kısa cümleden oluşsun.
-4. Edilgen çatı YERİNE daima ETKEN ÇATI kullan (Özne + Nesne + Yüklem):
-   - YANLIŞ: "Politika faizinin yüzde 45 seviyesinde sabit tutulmasına karar verildiği açıklandı."
-   - DOĞRU: "TCMB politika faizini yüzde 45 seviyesinde sabit tuttu."
-5. Mecaz, deyim, gazeteci klişesi ve belirsiz sıfat KULLANMA ("soğuk duş", "rekor kırdı", "dikkat çekti", "merakla beklenen" YASAK). Yalnızca net, tek anlamlı kelimeler ve somut rakamlar kullan.
-6. turkish_headline: Yabancı dildeki haberler dahil tüm ilgili haberler için etken çatılı, kısa ve sade Türkçe başlık yaz.
-7. summary_text: İlgili (puan >= 7) haberler için ASD-STE100 kurallarına uygun 2-3 kısa cümlelik düz paragraf yaz. İlgisiz veya düşük puanlı haberlerde boş metin ("") bırak.
-8. impact_note: İlgili (puan >= 7) haberler için ASD-STE100 kurallarına uygun, en fazla 12 kelimelik tek ve etken çatılı cümle yaz (örn. "Bu karar ticari kredi maliyetlerini artırır.").
+MANŞET BAŞLIK KURALLARI (ASD-STE100 BASİTLEŞTİRİLMİŞ TEKNİK DİL STANDARDI):
+Alt özet veya etki metni yazılmayacaktır; kullanıcı yalnızca senin yazacağın manşet başlığı (turkish_headline) görecektir. Bu nedenle turkish_headline alanını ASD-STE100 prensiplerine göre şu kurallarla yaz:
+1. Başlık tek başına haberi AÇIKLAYICI olmalı; okuyan kişi linke tıklamadan da ne olduğunu ve varsa kritik rakamı/kararı anlamalıdır:
+   - YANLIŞ (Belirsiz): "TCMB faiz kararını açıkladı"
+   - DOĞRU (Açıklayıcı + ASD-STE100): "TCMB politika faizini yüzde 45 seviyesinde sabit tuttu"
+   - YANLIŞ (Edilgen ve karmaşık): "BDDK tarafından ticari kredi büyüme sınırlarında değişikliğe gidildiği duyuruldu"
+   - DOĞRU (Açıklayıcı + ASD-STE100): "BDDK ticari kredi aylık büyüme sınırını yüzde 1,5 seviyesine indirdi"
+2. Daima ETKEN ÇATI kullan (Özne + Somut Veri/Nesne + Eylem).
+3. Sade, kısa ve tek anlamlı kelimeler kullan (en fazla 14-18 kelime).
+4. Mecaz, deyim, soru işareti, ünlem ve gazeteci klişesi KULLANMA ("soğuk duş", "kritik karar", "rekor kırdı", "dikkat çekti", "flas" YASAK).
+5. Yabancı dildeki haberleri de aynı kurallarla doğrudan sade Türkçeye çevirerek yaz.
 """
 
 # Flat, union-free JSON Schema strictly compatible with Gemini Interactions API structured output.
@@ -91,15 +90,7 @@ EVALUATION_JSON_SCHEMA: dict[str, Any] = {
                     },
                     "turkish_headline": {
                         "type": "string",
-                        "description": "ASD-STE100 kurallarına uygun, etken çatılı ve sade Türkçe başlık.",
-                    },
-                    "summary_text": {
-                        "type": "string",
-                        "description": "Madde işareti içermeyen, ASD-STE100 uyumlu 2-3 kısa cümlelik sade Türkçe paragraf özeti.",
-                    },
-                    "impact_note": {
-                        "type": "string",
-                        "description": "ASD-STE100 uyumlu, tek ve kısa cümlelik etki notu.",
+                        "description": "ASD-STE100 kurallarına uygun, etken çatılı, sonucu ve rakamı doğrudan veren açıklayıcı Türkçe manşet başlık.",
                     },
                 },
                 "required": [
@@ -109,8 +100,6 @@ EVALUATION_JSON_SCHEMA: dict[str, Any] = {
                     "importance_score",
                     "duplicate_of_id",
                     "turkish_headline",
-                    "summary_text",
-                    "impact_note",
                 ],
             },
         }
