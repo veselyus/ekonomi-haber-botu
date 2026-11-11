@@ -14,9 +14,13 @@ DEFAULT_SOURCES: tuple[NewsSource, ...] = (
     # --- Tier 1: Resmi Kurumlar ve Merkez Bankaları ---
     NewsSource(
         id="tcmb_duyurular",
-        name="TCMB Basın Duyuruları",
-        url="https://www.tcmb.gov.tr/wps/wcm/connect/TR/TCMB+TR/Main+Menu/Duyurular+ve+Konusmalar/Basin+Duyurulari/",
-        source_type=SourceType.TCMB_ANNOUNCEMENTS,
+        name="TCMB Resmi Duyurular",
+        url=(
+            "https://news.google.com/rss/search?"
+            "q=site:tcmb.gov.tr+(duyuru+OR+faiz+OR+enflasyon+OR+rezerv+OR+istatistik)+when:7d"
+            "&hl=tr&gl=TR&ceid=TR:tr"
+        ),
+        source_type=SourceType.RSS,
         default_category=NewsCategory.TR_ECONOMY,
         authority_tier=1,
         language="tr",

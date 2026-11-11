@@ -182,7 +182,7 @@ class GeminiNewsAnalyzer:
             model=self._model,
             input=prompt,
             system_instruction=EDITOR_SYSTEM_PROMPT,
-            generation_config={"thinking_level": "low"},
+            generation_config={"thinking_level": "minimal"},
             response_format={
                 "type": "text",
                 "mime_type": "application/json",
