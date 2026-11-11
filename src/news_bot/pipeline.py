@@ -34,19 +34,18 @@ class ScanStats:
 
 def determine_due_digest_slot(now_utc: datetime | None = None) -> str | None:
     """
-    Determine whether current Turkey time (UTC+3) falls inside a daily digest window.
+    Determine whether current Turkey time (UTC+3) falls inside the daily 08:00 morning digest window.
 
-    Using 3-hour windows (08:30-11:30 and 18:30-21:30 TSİ) ensures GitHub Actions
-    cron queue delays never cause a missed morning or evening bulletin.
+    Using a 07:45-10:45 TSİ window ensures GitHub Actions cron queue delays never
+    cause a missed 08:00 morning bulletin, while keeping the rest of the day silent
+    except for extraordinary (10/10) critical alerts.
     """
     local_dt = (now_utc or datetime.now(timezone.utc)).astimezone(TURKEY_TZ)
     current_t = local_dt.timetz().replace(tzinfo=None)
     date_prefix = local_dt.strftime("%Y-%m-%d")
 
-    if time(8, 30) <= current_t < time(11, 30):
+    if time(7, 45) <= current_t < time(10, 45):
         return f"{date_prefix}-morning"
-    if time(18, 30) <= current_t < time(21, 30):
-        return f"{date_prefix}-evening"
     return None
 
 

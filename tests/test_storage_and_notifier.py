@@ -90,19 +90,24 @@ def test_storage_digest_lifecycle_and_slot_tracking(tmp_path: Path) -> None:
 
 
 def test_determine_due_digest_slot_respects_turkey_timezone() -> None:
-    # 06:00 UTC == 09:00 TSİ -> Morning digest window
+    # 05:00 UTC == 08:00 TSİ -> Daily 08:00 Morning digest window
     assert (
-        determine_due_digest_slot(datetime(2026, 11, 11, 6, 0, tzinfo=timezone.utc))
+        determine_due_digest_slot(datetime(2026, 11, 11, 5, 0, tzinfo=timezone.utc))
         == "2026-11-11-morning"
     )
-    # 16:00 UTC == 19:00 TSİ -> Evening digest window
+    # 06:30 UTC == 09:30 TSİ -> Still inside delayed-cron morning grace window
     assert (
-        determine_due_digest_slot(datetime(2026, 11, 11, 16, 0, tzinfo=timezone.utc))
-        == "2026-11-11-evening"
+        determine_due_digest_slot(datetime(2026, 11, 11, 6, 30, tzinfo=timezone.utc))
+        == "2026-11-11-morning"
     )
-    # 11:00 UTC == 14:00 TSİ -> Outside digest windows
+    # 12:00 UTC == 15:00 TSİ -> Intraday critical check only (no digest)
     assert (
-        determine_due_digest_slot(datetime(2026, 11, 11, 11, 0, tzinfo=timezone.utc))
+        determine_due_digest_slot(datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc))
+        is None
+    )
+    # 19:30 UTC == 22:30 TSİ -> Night critical check only (no evening digest)
+    assert (
+        determine_due_digest_slot(datetime(2026, 11, 11, 19, 30, tzinfo=timezone.utc))
         is None
     )
 

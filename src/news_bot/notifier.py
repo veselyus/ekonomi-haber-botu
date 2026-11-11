@@ -66,7 +66,9 @@ def format_digest_messages(
         return []
 
     local_now = (now or datetime.now(timezone.utc)).astimezone(TURKEY_TZ)
-    period_label = "Sabah Bülteni" if local_now.hour < 14 else "Akşam Bülteni"
+    period_label = (
+        "Günlük Sabah Bülteni" if local_now.hour < 12 else "Günlük Özet Bülteni"
+    )
     date_str = local_now.strftime("%d.%m.%Y %H:%M")
 
     header = (

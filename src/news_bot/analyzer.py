@@ -35,8 +35,8 @@ KATEGORİ KURALLARI:
 4. IRRELEVANT: Yukarıdaki 3 alana doğrudan girmeyen veya gürültü niteliğindeki her şey! Magazin, spor, yerel asayiş, hava durumu, burç, bireysel hisse senedi tüyoları, altcoin spekülasyonu, clickbait ("altın kaç TL oldu", "emekliye müjde"), rutin banka personel alım/iş ilanları, mülakat/sınav rehberleri, somut veri içermeyen rutin köşe yazıları ve şirket reklam bültenleri KESİNLİKLE IRRELEVANT olmalı ve is_relevant=false işaretlenmelidir. (Not: Banka Genel Müdür / Yönetim Kurulu gibi üst düzey yönetici atamaları ilgili bankacılık haberidir ve TR_BANKING sayılır.)
 
 PUANLAMA CETVELİ (importance_score: 1-10):
-- 9-10 (KRİTİK - Anlık Bildirim): TCMB/Fed/ECB faiz ve politika kararları, BDDK yeni regülasyon/kredi sınırı kararları, TÜİK enflasyon veya GSYH açıklaması, Türkiye veya Türk bankaları kredi notu değişiklikleri, büyük Türk bankalarının kritik sendikasyon/sermaye kararları, küresel piyasa şokları.
-- 7-8 (ÖNEMLİ - Günlük Bülten): Önemli makro veriler (cari açık, sanayi üretimi, PMI, ABD tarım dışı istihdam/TÜFE), haftalık bankacılık kredi/mevduat eğilimleri, IMF/Dünya Bankası tahmin revizyonları, ekonomi yönetiminin somut politika açıklamaları.
+- 10 (OLAĞANÜSTÜ KRİTİK - Anlık Alarm): Yalnızca çok büyük resmi kararlar ve şoklar! (TCMB, Fed veya ECB faiz kararı ilanı, BDDK'nın bankacılık/kredi kurallarını değiştiren kritik regülasyon kararı, TÜİK aylık enflasyon veya çeyreklik GSYH büyüme verisi açıklanması, Moody's/Fitch/S&P Türkiye veya Türk bankaları kredi notu değişikliği, olağanüstü finansal şoklar). Sıradan haberlere asla 10 verme!
+- 7-9 (ÖNEMLİ - Sabah 08:00 Günlük Bülteni): Önemli makroekonomik veriler (cari denge, sanayi üretimi, ihracat, PMI, ABD istihdam/TÜFE), ekonomi yönetimi/TCMB/BDDK/TBB açıklamaları, haftalık bankacılık verileri, Türk bankalarının sendikasyon kredileri, tahvil ihraçları, bilançoları, üst düzey atamaları ve IMF/Dünya Bankası raporları.
 - 1-6 (DÜŞÜK ÖNEM - Gönderilmeyecek): Rutin günlük piyasa açılış/kapanış tekrarı, somut karar içermeyen tahmin/yorumlar, ikincil mikro haberler.
 
 MÜKERRER HABER KURALI (duplicate_of_id):

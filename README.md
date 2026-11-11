@@ -15,9 +15,9 @@
 3. **Otorite Öncelikli Tekilleştirme (`src/news_bot/deduplicator.py` & `storage.py`)**
    * `SQLite` ve `RapidFuzz` ile aynı olayı anlatan haberleri karşılaştırır; resmi kurum duyurularına (`Tier 1`) öncelik verir.
    * Farklı dillerdeki aynı haberleri (ör. Fed'in İngilizce duyurusu ile yerel basındaki Türkçe çevirisi) Gemini değerlendirme katmanında `duplicate_of_id` ile yakalar.
-4. **Gemini Baş Editör & Çift Modlu Telegram Teslimatı (`analyzer.py` & `notifier.py`)**
-   * **9–10 Puan (Kritik Gelişme):** Faiz kararları, BDDK regülasyonları, enflasyon/büyüme verileri veya not kararları **anında** `🚨 KRİTİK HABER` kartıyla Telegram'a düşer.
-   * **7–8 Puan (Önemli Gelişme):** Kullanıcıyı gün boyu bildirim yağmuruna tutmamak için SQLite kuyruğuna alınır; **08:30 TSİ (Sabah Bülteni)** ve **18:30 TSİ (Akşam Bülteni)** saatlerinde kategorilere ayrılmış tek bir özet halinde gönderilir.
+4. **Gemini Baş Editör & Akıllı Teslimat (`analyzer.py` & `notifier.py`)**
+   * **Sabah 08:00 TSİ Tek Günlük Bülten (`7–9` puan):** Gün boyu ve gece biriken tüm önemli Türkiye ekonomisi, bankacılık ve dünya ekonomisi gelişmeleri her sabah **08:00 TSİ**'de 3 kategori altında derli toplu tek bülten halinde gönderilir.
+   * **Olağanüstü Kritik Karar Alarmı (`10/10` puan):** Saat **11:00 TSİ** (TÜİK verileri sonrası), **15:00 TSİ** (TCMB/ECB kararları sonrası) ve **22:30 TSİ** (Fed/Kredi notu kararları sonrası) yapılan kontrollerde yalnızca `10/10` puanlık olağanüstü resmi kararlar varsa anında `🚨 KRİTİK HABER` kartıyla iletilir; aksi halde kanal sessiz kalır.
    * **1–6 Puan / Kapsam Dışı:** Veritabanına işlenip sessizce elenir; bir sonraki taramada tekrar değerlendirilmez.
 
 ---

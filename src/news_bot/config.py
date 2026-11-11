@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
 
     critical_score_threshold: int = Field(
-        default=9, ge=1, le=10, alias="CRITICAL_SCORE_THRESHOLD"
+        default=10, ge=1, le=10, alias="CRITICAL_SCORE_THRESHOLD"
     )
     digest_score_threshold: int = Field(
         default=7, ge=1, le=10, alias="DIGEST_SCORE_THRESHOLD"
@@ -36,9 +36,9 @@ class Settings(BaseSettings):
     fuzzy_duplicate_threshold: float = Field(
         default=80.0, ge=50.0, le=100.0, alias="FUZZY_DUPLICATE_THRESHOLD"
     )
-    batch_size: int = Field(default=25, ge=1, le=40, alias="BATCH_SIZE")
+    batch_size: int = Field(default=20, ge=1, le=40, alias="BATCH_SIZE")
     max_candidates_per_scan: int = Field(
-        default=25, ge=5, le=200, alias="MAX_CANDIDATES_PER_SCAN"
+        default=40, ge=5, le=200, alias="MAX_CANDIDATES_PER_SCAN"
     )
     http_timeout_seconds: float = Field(
         default=15.0, ge=3.0, le=60.0, alias="HTTP_TIMEOUT_SECONDS"

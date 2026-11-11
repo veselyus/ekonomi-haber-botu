@@ -2,10 +2,13 @@ name: Economy & Banking News Bot
 
 on:
   schedule:
-    # Her 30 dakikada bir çalışır:
-    # - Kritik haberleri (9-10 puan) anında Telegram'a gönderir.
-    # - Önemli haberleri (7-8 puan) kuyruğa alır; 08:30 ve 18:30 TSİ dilimlerinde toplu bülten olarak iletir.
-    - cron: "0,30 * * * *"
+    # 08:00 TSİ (05:00 UTC) -> Günlük Tek Sabah Bülteni (7-9 puanlık biriken tüm önemli haberler) + Tarama
+    - cron: "0 5 * * *"
+    # 11:00 TSİ (TÜİK verileri sonrası), 15:00 TSİ (TCMB/ECB sonrası), 22:30 TSİ (Fed/Not kararları sonrası)
+    # Gün içindeki bu 3 kontrolde normal haberler sessizce ertesi sabah 08:00 bültenine biriktirilir;
+    # yalnızca 10/10 puanlık olağanüstü kritik bir karar varsa anında alarm gönderilir.
+    - cron: "0 8,12 * * *"
+    - cron: "30 19 * * *"
 
   workflow_dispatch:
     inputs:
