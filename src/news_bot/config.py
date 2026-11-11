@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     )
 
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
-    gemini_model: str = Field(default="gemini-3.8-flash", alias="GEMINI_MODEL")
+    gemini_model: str = Field(default="gemini-3.5-flash-lite", alias="GEMINI_MODEL")
 
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
@@ -36,9 +36,9 @@ class Settings(BaseSettings):
     fuzzy_duplicate_threshold: float = Field(
         default=80.0, ge=50.0, le=100.0, alias="FUZZY_DUPLICATE_THRESHOLD"
     )
-    batch_size: int = Field(default=15, ge=1, le=40, alias="BATCH_SIZE")
+    batch_size: int = Field(default=25, ge=1, le=40, alias="BATCH_SIZE")
     max_candidates_per_scan: int = Field(
-        default=45, ge=5, le=200, alias="MAX_CANDIDATES_PER_SCAN"
+        default=25, ge=5, le=200, alias="MAX_CANDIDATES_PER_SCAN"
     )
     http_timeout_seconds: float = Field(
         default=15.0, ge=3.0, le=60.0, alias="HTTP_TIMEOUT_SECONDS"

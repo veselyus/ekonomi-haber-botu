@@ -148,11 +148,16 @@ class GeminiNewsAnalyzer:
         self,
         *,
         api_key: str,
-        model: str = "gemini-3.8-flash",
-        batch_size: int = 15,
+        model: str = "gemini-3.5-flash-lite",
+        batch_size: int = 25,
         client: genai.Client | None = None,
     ) -> None:
         self._model = model
+        self._fallback_model = (
+            "gemini-3.8-flash"
+            if model == "gemini-3.5-flash-lite"
+            else "gemini-3.5-flash-lite"
+        )
         self._batch_size = batch_size
         self._client = client or genai.Client(api_key=api_key)
 
@@ -164,8 +169,7 @@ class GeminiNewsAnalyzer:
         total = len(articles)
         for start in range(0, total, self._batch_size):
             if start > 0:
-                # Polite pacing across batches to respect free-tier RPM quotas
-                time.sleep(2.0)
+                time.sleep(1.5)
             batch = articles[start : start + self._batch_size]
             batch_evals = self._evaluate_batch(batch)
             results.update(batch_evals)
@@ -173,13 +177,13 @@ class GeminiNewsAnalyzer:
 
     @retry(
         reraise=True,
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, min=2, max=20),
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=2, min=2, max=8),
         retry=retry_if_exception_type(Exception),
     )
-    def _call_gemini_interaction(self, prompt: str) -> Any:
+    def _call_model_once(self, prompt: str, model_name: str) -> Any:
         return self._client.interactions.create(
-            model=self._model,
+            model=model_name,
             input=prompt,
             system_instruction=EDITOR_SYSTEM_PROMPT,
             generation_config={"thinking_level": "minimal"},
@@ -189,7 +193,20 @@ class GeminiNewsAnalyzer:
                 "schema": EVALUATION_JSON_SCHEMA,
             },
             store=False,
+            timeout=90.0,
         )
+
+    def _call_gemini_interaction(self, prompt: str) -> Any:
+        try:
+            return self._call_model_once(prompt, self._model)
+        except Exception as primary_exc:
+            logger.warning(
+                "Birincil model (%s) yanıt vermedi (%s); yedek modele (%s) geçiliyor...",
+                self._model,
+                primary_exc,
+                self._fallback_model,
+            )
+            return self._call_model_once(prompt, self._fallback_model)
 
     def _evaluate_batch(
         self, batch: list[RawArticle]
