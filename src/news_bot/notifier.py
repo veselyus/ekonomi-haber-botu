@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -22,32 +23,44 @@ CATEGORY_ORDER: tuple[NewsCategory, ...] = (
 )
 
 
+def _normalize_plain_paragraph(raw_text: str) -> str:
+    """Strip any stray bullet markers or line breaks into a single clean prose paragraph."""
+    if not raw_text.strip():
+        return ""
+    cleaned_lines = [
+        re.sub(r"^(?:[•\-*]|\d+[.)])\s*", "", line.strip())
+        for line in raw_text.splitlines()
+        if line.strip()
+    ]
+    return re.sub(r"\s+", " ", " ".join(cleaned_lines)).strip()
+
+
 def format_critical_alert(item: EnrichedArticle) -> str:
-    """Format an instant critical news alert (score 9-10) in Telegram HTML."""
+    """Format an instant critical news alert (score 10) in plain ASD-STE100 Telegram HTML."""
     ev = item.evaluation
     category_label = html.escape(ev.category.display_title)
     headline = html.escape(ev.turkish_headline or item.raw.title)
     source = html.escape(item.raw.source_name)
     safe_url = html.escape(item.raw.url, quote=True)
+    paragraph = html.escape(_normalize_plain_paragraph(ev.summary_text))
 
     lines: list[str] = [
         f"🚨 <b>KRİTİK HABER | {category_label}</b>",
         f"<b>{headline}</b>",
-        "",
     ]
-    for bullet in ev.summary_bullets[:3]:
-        clean_bullet = html.escape(bullet.strip().lstrip("•-* ").strip())
-        if clean_bullet:
-            lines.append(f"• {clean_bullet}")
+    if paragraph:
+        lines.append("")
+        lines.append(paragraph)
 
     if ev.impact_note.strip():
         lines.append("")
-        lines.append(f"💡 <i>Etki: {html.escape(ev.impact_note.strip())}</i>")
+        lines.append(
+            f"💡 <i>Etki: {html.escape(_normalize_plain_paragraph(ev.impact_note))}</i>"
+        )
 
     lines.append("")
     lines.append(
-        f"📌 Kaynak: <b>{source}</b> | Önem: <b>{ev.importance_score}/10</b> | "
-        f'<a href="{safe_url}">Habere Git</a>'
+        f'📌 Kaynak: <b>{source}</b> | <a href="{safe_url}">Habere Git</a>'
     )
     return "\n".join(lines)
 
@@ -58,7 +71,7 @@ def format_digest_messages(
     now: datetime | None = None,
 ) -> list[str]:
     """
-    Format categorized daily digest messages in Telegram HTML.
+    Format categorized daily digest messages in clean, bullet-free ASD-STE100 paragraphs.
 
     Automatically splits into multiple messages if total length exceeds Telegram's limit.
     """
@@ -73,7 +86,7 @@ def format_digest_messages(
 
     header = (
         f"📊 <b>EKONOMİ &amp; BANKACILIK ÖZETİ ({period_label})</b>\n"
-        f"🗓 <i>{date_str} (TSİ) — Seçilmiş {len(items)} önemli gelişme</i>\n"
+        f"🗓 <i>{date_str} (TSİ) — {len(items)} gelişme</i>\n"
         "━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -90,21 +103,18 @@ def format_digest_messages(
             headline = html.escape(ev.turkish_headline or item.raw.title)
             source = html.escape(item.raw.source_name)
             safe_url = html.escape(item.raw.url, quote=True)
+            paragraph = html.escape(_normalize_plain_paragraph(ev.summary_text))
 
-            entry_lines = [
-                f"🔹 <b>{headline}</b> <i>({ev.importance_score}/10)</i>"
-            ]
-            for bullet in ev.summary_bullets[:3]:
-                clean_bullet = html.escape(bullet.strip().lstrip("•-* ").strip())
-                if clean_bullet:
-                    entry_lines.append(f"  • {clean_bullet}")
+            entry_lines = [f"🔹 <b>{headline}</b>"]
+            if paragraph:
+                entry_lines.append(paragraph)
             if ev.impact_note.strip():
+                clean_impact = html.escape(_normalize_plain_paragraph(ev.impact_note))
                 entry_lines.append(
-                    f"  💡 <i>{html.escape(ev.impact_note.strip())}</i>"
+                    f'<i>Etki: {clean_impact}</i> — <a href="{safe_url}">{source}</a>'
                 )
-            entry_lines.append(
-                f'  🔗 <i>{source}</i> — <a href="{safe_url}">Kaynak</a>'
-            )
+            else:
+                entry_lines.append(f'<a href="{safe_url}">{source}</a>')
             blocks.append("\n".join(entry_lines))
 
     return _pack_blocks_into_messages(blocks, max_len=TELEGRAM_MAX_MESSAGE_LENGTH)

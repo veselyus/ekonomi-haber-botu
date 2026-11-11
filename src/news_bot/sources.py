@@ -105,6 +105,15 @@ DEFAULT_SOURCES: tuple[NewsSource, ...] = (
         language="tr",
     ),
     NewsSource(
+        id="gazete_oksijen",
+        name="Gazete Oksijen",
+        url="https://gazeteoksijen.com/export/rss",
+        source_type=SourceType.RSS,
+        default_category=NewsCategory.TR_ECONOMY,
+        authority_tier=2,
+        language="tr",
+    ),
+    NewsSource(
         id="aa_ekonomi",
         name="Anadolu Ajansı Ekonomi",
         url="https://www.aa.com.tr/tr/rss/default?cat=ekonomi",

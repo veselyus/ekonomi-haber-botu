@@ -8,7 +8,7 @@
 
 1. **Küratörlü Kaynak Katmanı (`src/news_bot/sources.py`)**
    * **Resmi Kurumlar & Merkez Bankaları (Tier 1):** TCMB Basın Duyuruları, BDDK Duyuruları, ABD Merkez Bankası (Fed), Avrupa Merkez Bankası (ECB).
-   * **Ekonomi ve Finans Basını (Tier 2):** Banka Dünyası (`bankadunyasi.com`), Bloomberg HT, Ekonomim, Dünya Gazetesi, Anadolu Ajansı Ekonomi, TRT Haber Ekonomi, Türkiye Bankacılık/BDDK özel akışı, Financial Times Global Economy, CNBC Economy, BBC Business.
+   * **Ekonomi ve Finans Basını (Tier 2):** Banka Dünyası (`bankadunyasi.com`), Gazete Oksijen (`gazeteoksijen.com`), Bloomberg HT, Ekonomim, Dünya Gazetesi, Anadolu Ajansı Ekonomi, TRT Haber Ekonomi, Türkiye Bankacılık/BDDK özel akışı, Financial Times Global Economy, CNBC Economy, BBC Business.
 2. **Kural Tabanlı Ön Eleme (`src/news_bot/prefilter.py`)**
    * *"Çeyrek altın kaç TL oldu?"*, *"Emekli promosyonu ne kadar?"*, *"Belli oldu mu?"*, spor, magazin, burç, şans oyunları ve hisse/altcoin pazarlama içeriklerini yapay zekaya göndermeden sıfır maliyetle eler.
    * URL takip parametrelerini (`utm_*`, `fbclid` vb.) temizler ve eski haberleri dışarıda bırakır.

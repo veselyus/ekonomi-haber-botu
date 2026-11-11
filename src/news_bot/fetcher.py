@@ -113,16 +113,25 @@ class NewsFetcher:
             rss_items = self._parse_rss_feed(
                 response.content, source, fetched_at=fetched_at, max_items=max_items
             )
-            if rss_items or not source.url.rstrip("/").endswith("/feed"):
+            if rss_items:
                 return rss_items
-            homepage_url = source.url.rstrip("/")[:-5] + "/"
-            home_resp = client.get(homepage_url)
+            trimmed_url = source.url.rstrip("/")
+            fallback_url: str | None = None
+            if trimmed_url.endswith("/feed"):
+                fallback_url = trimmed_url[:-5] + "/"
+            elif trimmed_url.endswith("/export/rss"):
+                fallback_url = trimmed_url[: -len("/export/rss")] + "/ekonomi"
+
+            if not fallback_url:
+                return rss_items
+
+            home_resp = client.get(fallback_url)
             home_resp.raise_for_status()
             return self._parse_official_links(
                 home_resp.text,
-                source.model_copy(update={"url": homepage_url}),
+                source.model_copy(update={"url": fallback_url}),
                 fetched_at=fetched_at,
-                link_selector="article a[href], h2 a[href], h3 a[href]",
+                link_selector="article a[href], h2 a[href], h3 a[href], a[href*='/ekonomi/']",
                 max_items=max_items,
             )
         if source.source_type == SourceType.BDDK_ANNOUNCEMENTS:

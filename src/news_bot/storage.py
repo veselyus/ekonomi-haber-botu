@@ -146,7 +146,7 @@ class ArticleStorage:
                         item.evaluation.importance_score,
                         item.evaluation.duplicate_of_id,
                         item.evaluation.turkish_headline,
-                        json.dumps(item.evaluation.summary_bullets, ensure_ascii=False),
+                        json.dumps(item.evaluation.summary_text, ensure_ascii=False),
                         item.evaluation.impact_note,
                         int(item.instant_sent),
                         int(item.queued_for_digest),
@@ -237,8 +237,17 @@ class ArticleStorage:
             datetime.fromisoformat(published_raw) if published_raw else None
         )
         fetched_dt = datetime.fromisoformat(str(row["fetched_at"]))
-        bullets_raw = json.loads(str(row["summary_json"]))
-        bullets = [str(b) for b in bullets_raw] if isinstance(bullets_raw, list) else []
+        parsed_summary = json.loads(str(row["summary_json"]))
+        if isinstance(parsed_summary, list):
+            summary_text = " ".join(
+                str(b).strip().lstrip("•-* ").strip()
+                for b in parsed_summary
+                if str(b).strip()
+            )
+        elif isinstance(parsed_summary, str):
+            summary_text = parsed_summary.strip()
+        else:
+            summary_text = ""
 
         raw = RawArticle(
             article_id=str(row["article_id"]),
@@ -260,7 +269,7 @@ class ArticleStorage:
             importance_score=int(row["importance_score"]),
             duplicate_of_id=row["duplicate_of_id"],
             turkish_headline=str(row["turkish_headline"]),
-            summary_bullets=bullets,
+            summary_text=summary_text,
             impact_note=str(row["impact_note"]),
         )
         return EnrichedArticle(

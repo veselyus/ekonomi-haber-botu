@@ -100,15 +100,15 @@ class ArticleEvaluation(BaseModel):
         ),
     )
     turkish_headline: str = Field(
-        description="Tık tuzağından arındırılmış, net ve kurumsal Türkçe başlık (yabancı dildeki haberler Türkçeye çevrilir)."
+        description="ASD-STE100 kurallarına uygun, etken çatılı, net ve sade Türkçe başlık."
     )
-    summary_bullets: list[str] = Field(
-        default_factory=list,
-        description="En fazla 3 maddelik, somut verileri ve kararları içeren özlü Türkçe özet.",
+    summary_text: str = Field(
+        default="",
+        description="ASD-STE100 kurallarına göre yazılmış, madde işareti içermeyen, 2-3 kısa ve sade cümlelik düz paragraf özeti.",
     )
     impact_note: str = Field(
         default="",
-        description="Ekonomi veya bankacılık sektörü açısından etkisini özetleyen tek cümlelik Türkçe not.",
+        description="ASD-STE100 kurallarına uygun, en fazla 12 kelimelik etken çatılı tek cümlelik etki notu.",
     )
 
     @field_validator("duplicate_of_id", mode="before")

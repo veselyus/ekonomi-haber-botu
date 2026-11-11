@@ -48,11 +48,11 @@ def _sample_enriched(
         importance_score=score,
         duplicate_of_id=None,
         turkish_headline=f"BDDK <Kredi & Mevduat> Düzenlemesi #{idx}",
-        summary_bullets=[
-            "Ticari kredilerde büyüme sınırı %2'den %1,5'e çekildi.",
-            "TL mevduat payı hedefleri güncellendi.",
-        ],
-        impact_note="Bankacılık net faiz marjı üzerinde doğrudan etkili.",
+        summary_text=(
+            "BDDK ticari kredilerde aylık büyüme sınırını yüzde 1,5 seviyesine indirdi. "
+            "Kurum TL mevduat payı hedeflerini güncelledi."
+        ),
+        impact_note="Bu karar banka kredi büyümesini yavaşlatır.",
     )
     return EnrichedArticle(
         raw=raw,
@@ -120,6 +120,7 @@ def test_telegram_formatters_escape_html_and_chunk_long_digests() -> None:
     assert "&lt;Kredi &amp; Mevduat&gt;" in alert_html
     assert "BDDK &amp; Kurum &lt;Test&gt;" in alert_html
     assert 'href="https://www.bddk.org.tr/duyuru/1?a=1&amp;b=2"' in alert_html
+    assert "•" not in alert_html
 
     many_items = [
         _sample_enriched(

@@ -100,11 +100,11 @@ def test_gemini_analyzer_parses_structured_output_and_suppresses_cross_lang_dupl
                 "importance_score": 10,
                 "duplicate_of_id": "",
                 "turkish_headline": "Fed Politika Faizini Sabit Tuttu",
-                "summary_bullets": [
-                    "FOMC politika faiz aralığını değiştirmedi.",
-                    "Enflasyon hedefe yaklaşana kadar temkinli duruş korunacak.",
-                ],
-                "impact_note": "Gelişmekte olan ülke sermaye akımları ve küresel dolar likiditesi için belirleyici.",
+                "summary_text": (
+                    "Fed politika faiz aralığını değiştirmedi. "
+                    "Banka enflasyon düşene kadar mevcut duruşu koruyacak."
+                ),
+                "impact_note": "Bu karar küresel dolar likiditesini dengeler.",
             },
             {
                 "article_id": tr_copy.article_id,
@@ -113,7 +113,7 @@ def test_gemini_analyzer_parses_structured_output_and_suppresses_cross_lang_dupl
                 "importance_score": 9,
                 "duplicate_of_id": fed_official.article_id,
                 "turkish_headline": "Fed Faizi Değiştirmedi",
-                "summary_bullets": ["Fed faizi sabit bıraktı."],
+                "summary_text": "Fed politika faizini sabit tuttu.",
                 "impact_note": "",
             },
         ]
