@@ -1,0 +1,299 @@
+"""End-to-end orchestration for scanning critical news and dispatching daily digests."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, time, timezone
+
+from news_bot.analyzer import GeminiNewsAnalyzer
+from news_bot.config import Settings
+from news_bot.deduplicator import deduplicate_candidates
+from news_bot.fetcher import NewsFetcher
+from news_bot.models import EnrichedArticle, NewsCategory
+from news_bot.notifier import TURKEY_TZ, TelegramNotifier
+from news_bot.prefilter import prefilter_articles
+from news_bot.sources import load_active_sources
+from news_bot.storage import ArticleStorage
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ScanStats:
+    """Telemetry summary of a single scan run."""
+
+    fetched_count: int
+    prefiltered_dropped: int
+    dedup_dropped: int
+    evaluated_count: int
+    critical_sent: int
+    queued_for_digest: int
+    ignored_irrelevant: int
+
+
+def determine_due_digest_slot(now_utc: datetime | None = None) -> str | None:
+    """
+    Determine whether current Turkey time (UTC+3) falls inside a daily digest window.
+
+    Using 3-hour windows (08:30-11:30 and 18:30-21:30 TSİ) ensures GitHub Actions
+    cron queue delays never cause a missed morning or evening bulletin.
+    """
+    local_dt = (now_utc or datetime.now(timezone.utc)).astimezone(TURKEY_TZ)
+    current_t = local_dt.timetz().replace(tzinfo=None)
+    date_prefix = local_dt.strftime("%Y-%m-%d")
+
+    if time(8, 30) <= current_t < time(11, 30):
+        return f"{date_prefix}-morning"
+    if time(18, 30) <= current_t < time(21, 30):
+        return f"{date_prefix}-evening"
+    return None
+
+
+class NewsPipeline:
+    """Coordinates fetching, zero-noise filtering, Gemini scoring, storage, and Telegram."""
+
+    def __init__(self, settings: Settings, *, dry_run: bool = False) -> None:
+        self._settings = settings
+        self._dry_run = dry_run
+        self._storage = ArticleStorage(settings.database_path)
+        self._notifier = TelegramNotifier(
+            bot_token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+            dry_run=dry_run,
+            timeout_seconds=settings.http_timeout_seconds,
+        )
+        self._dry_run_digest_buffer: list[EnrichedArticle] = []
+
+    def run_fetch_preview(self) -> ScanStats:
+        """Fetch and run local pre-filter + deduplication without calling Gemini or Telegram."""
+        sources = load_active_sources()
+        fetcher = NewsFetcher(timeout_seconds=self._settings.http_timeout_seconds)
+        raw_articles = fetcher.fetch_all(sources)
+
+        kept_after_prefilter, prefiltered_dropped = prefilter_articles(
+            raw_articles,
+            max_age_hours=self._settings.max_article_age_hours,
+        )
+        candidates, dedup_dropped = deduplicate_candidates(
+            kept_after_prefilter,
+            self._storage,
+            fuzzy_threshold=self._settings.fuzzy_duplicate_threshold,
+        )
+
+        if len(candidates) > self._settings.max_candidates_per_scan:
+            candidates.sort(
+                key=lambda item: (
+                    item.authority_tier,
+                    -(item.published_at.timestamp() if item.published_at else 0.0),
+                )
+            )
+            candidates = candidates[: self._settings.max_candidates_per_scan]
+        logger.info(
+            "Önizleme Özeti -> Çekilen: %d | Clickbait/Eski Atılan: %d | Mükerrer Atılan: %d | Gemini Adayı: %d",
+            len(raw_articles),
+            prefiltered_dropped,
+            dedup_dropped,
+            len(candidates),
+        )
+        for idx, item in enumerate(candidates[:15], start=1):
+            logger.info(
+                "  [%02d] (Tier %d | %s) %s",
+                idx,
+                item.authority_tier,
+                item.source_name,
+                item.title,
+            )
+        return ScanStats(
+            fetched_count=len(raw_articles),
+            prefiltered_dropped=prefiltered_dropped,
+            dedup_dropped=dedup_dropped,
+            evaluated_count=0,
+            critical_sent=0,
+            queued_for_digest=0,
+            ignored_irrelevant=0,
+        )
+
+    def run_scan(self) -> ScanStats:
+        """
+        Fetch sources, eliminate noise/duplicates, score via Gemini,
+        send critical alerts (score >= 9) immediately, and queue 7-8 items for digest.
+        """
+        sources = load_active_sources()
+        fetcher = NewsFetcher(timeout_seconds=self._settings.http_timeout_seconds)
+        raw_articles = fetcher.fetch_all(sources)
+
+        kept_after_prefilter, prefiltered_dropped = prefilter_articles(
+            raw_articles,
+            max_age_hours=self._settings.max_article_age_hours,
+        )
+        candidates, dedup_dropped = deduplicate_candidates(
+            kept_after_prefilter,
+            self._storage,
+            fuzzy_threshold=self._settings.fuzzy_duplicate_threshold,
+        )
+
+        if len(candidates) > self._settings.max_candidates_per_scan:
+            candidates.sort(
+                key=lambda item: (
+                    item.authority_tier,
+                    -(item.published_at.timestamp() if item.published_at else 0.0),
+                )
+            )
+            candidates = candidates[: self._settings.max_candidates_per_scan]
+
+        logger.info(
+            "Huni Özeti -> Çekilen: %d | Ön Eleme Atılan: %d | Mükerrer Atılan: %d | Yeni Aday: %d",
+            len(raw_articles),
+            prefiltered_dropped,
+            dedup_dropped,
+            len(candidates),
+        )
+
+        if not candidates:
+            if not self._dry_run:
+                pruned = self._storage.prune_older_than(self._settings.retention_days)
+                if pruned:
+                    logger.info("Eski %d kayıt veritabanından temizlendi.", pruned)
+            return ScanStats(
+                fetched_count=len(raw_articles),
+                prefiltered_dropped=prefiltered_dropped,
+                dedup_dropped=dedup_dropped,
+                evaluated_count=0,
+                critical_sent=0,
+                queued_for_digest=0,
+                ignored_irrelevant=0,
+            )
+
+        analyzer = GeminiNewsAnalyzer(
+            api_key=self._settings.gemini_api_key,
+            model=self._settings.gemini_model,
+            batch_size=self._settings.batch_size,
+        )
+        evaluations_by_id = analyzer.evaluate_articles(candidates)
+
+        enriched_all: list[EnrichedArticle] = []
+        critical_to_send: list[EnrichedArticle] = []
+        queued_items: list[EnrichedArticle] = []
+        ignored_count = 0
+
+        for raw_item in candidates:
+            ev = evaluations_by_id[raw_item.article_id]
+            is_valid_domain = (
+                ev.is_relevant and ev.category != NewsCategory.IRRELEVANT
+            )
+
+            if (
+                is_valid_domain
+                and ev.importance_score >= self._settings.critical_score_threshold
+            ):
+                record = EnrichedArticle(
+                    raw=raw_item,
+                    evaluation=ev,
+                    instant_sent=False,
+                    queued_for_digest=False,
+                    digest_sent=False,
+                )
+                critical_to_send.append(record)
+                enriched_all.append(record)
+            elif (
+                is_valid_domain
+                and ev.importance_score >= self._settings.digest_score_threshold
+            ):
+                record = EnrichedArticle(
+                    raw=raw_item,
+                    evaluation=ev,
+                    instant_sent=False,
+                    queued_for_digest=True,
+                    digest_sent=False,
+                )
+                queued_items.append(record)
+                enriched_all.append(record)
+            else:
+                record = EnrichedArticle(
+                    raw=raw_item,
+                    evaluation=ev,
+                    instant_sent=False,
+                    queued_for_digest=False,
+                    digest_sent=False,
+                )
+                ignored_count += 1
+                enriched_all.append(record)
+
+        if self._dry_run:
+            self._dry_run_digest_buffer.extend(queued_items)
+        else:
+            self._storage.save_articles(enriched_all)
+
+        critical_to_send.sort(
+            key=lambda x: x.evaluation.importance_score, reverse=True
+        )
+        delivered_ids = self._notifier.send_critical_alerts(critical_to_send)
+        if delivered_ids and not self._dry_run:
+            self._storage.mark_instant_sent(delivered_ids)
+
+        if not self._dry_run:
+            pruned = self._storage.prune_older_than(self._settings.retention_days)
+            if pruned:
+                logger.info("Eski %d kayıt veritabanından temizlendi.", pruned)
+
+        stats = ScanStats(
+            fetched_count=len(raw_articles),
+            prefiltered_dropped=prefiltered_dropped,
+            dedup_dropped=dedup_dropped,
+            evaluated_count=len(candidates),
+            critical_sent=len(delivered_ids),
+            queued_for_digest=len(queued_items),
+            ignored_irrelevant=ignored_count,
+        )
+        logger.info(
+            "Tarama Tamamlandı -> Kritik Gönderilen: %d | Bültene Eklenen: %d | Elenen Gürültü: %d",
+            stats.critical_sent,
+            stats.queued_for_digest,
+            stats.ignored_irrelevant,
+        )
+        return stats
+
+    def run_digest(self) -> int:
+        """Send queued important articles (score 7-8) as a categorized bulletin."""
+        pending = list(self._storage.get_pending_digest_articles())
+        if self._dry_run and self._dry_run_digest_buffer:
+            existing_ids = {x.raw.article_id for x in pending}
+            pending.extend(
+                x
+                for x in self._dry_run_digest_buffer
+                if x.raw.article_id not in existing_ids
+            )
+            pending.sort(
+                key=lambda x: x.evaluation.importance_score, reverse=True
+            )
+
+        logger.info("Bülten kuyruğunda %d önemli haber bulundu.", len(pending))
+
+        sent_ok = self._notifier.send_digest(
+            pending, send_empty=self._settings.send_empty_digest
+        )
+        if sent_ok and pending and not self._dry_run:
+            self._storage.mark_digest_sent([item.raw.article_id for item in pending])
+            logger.info("%d haber bülten olarak gönderildi ve işaretlendi.", len(pending))
+            return len(pending)
+
+        return len(pending) if (sent_ok and pending) else 0
+
+    def run_auto(self, now_utc: datetime | None = None) -> None:
+        """
+        Scheduled cloud mode: always scan for critical alerts, and automatically
+        dispatch morning (08:30 TSİ) or evening (18:30 TSİ) digest once per window.
+        """
+        self.run_scan()
+        slot_key = determine_due_digest_slot(now_utc=now_utc)
+        if slot_key is None:
+            return
+        if not self._dry_run and self._storage.has_digest_slot_run(slot_key):
+            logger.info("Bülten dilimi (%s) daha önce çalıştırıldı; atlanıyor.", slot_key)
+            return
+
+        logger.info("Bülten zaman dilimi aktif (%s); günlük özet hazırlanıyor...", slot_key)
+        self.run_digest()
+        if not self._dry_run:
+            self._storage.record_digest_slot_run(slot_key)

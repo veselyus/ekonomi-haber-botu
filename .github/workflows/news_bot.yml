@@ -1,0 +1,81 @@
+name: Economy & Banking News Bot
+
+on:
+  schedule:
+    # Her 30 dakikada bir çalışır:
+    # - Kritik haberleri (9-10 puan) anında Telegram'a gönderir.
+    # - Önemli haberleri (7-8 puan) kuyruğa alır; 08:30 ve 18:30 TSİ dilimlerinde toplu bülten olarak iletir.
+    - cron: "0,30 * * * *"
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Çalışma modu"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - auto
+          - both
+          - scan
+          - digest
+          - fetch-preview
+      dry_run:
+        description: "Dry-run (Telegram'a göndermeden sadece loglarda önizle)"
+        required: false
+        default: false
+        type: boolean
+
+# Aynı anda iki zamanlanmış işin SQLite önbelleğini ezmesini engeller
+concurrency:
+  group: news-bot-state
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Depoyu İndir
+        uses: actions/checkout@v4
+
+      - name: Python Kurulumu
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Bağımlılıkları Yükle
+        run: pip install -r requirements.txt
+
+      - name: SQLite Durum Veritabanını Önbellekten Geri Yükle
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: news-bot-sqlite-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            news-bot-sqlite-
+
+      - name: Haber Botunu Çalıştır
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
+        run: |
+          MODE="${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'auto' }}"
+          DRY_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_FLAG="--dry-run"
+          fi
+          mkdir -p data
+          python main.py --mode "$MODE" $DRY_FLAG
+
+      - name: Güncel SQLite Veritabanını Önbelleğe Kaydet
+        if: always() && inputs.dry_run != true
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: news-bot-sqlite-${{ github.run_id }}-${{ github.run_attempt }}
+

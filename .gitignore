@@ -1,0 +1,23 @@
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets & local config
+.env
+.env.local
+
+# Local runtime database & logs
+data/*.db
+data/*.db-journal
+data/*.db-wal
+logs/
+
