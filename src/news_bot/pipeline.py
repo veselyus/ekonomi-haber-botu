@@ -121,6 +121,19 @@ class NewsPipeline:
         )
         self._dry_run_digest_buffer: list[EnrichedArticle] = []
 
+    def reset_state(self) -> int:
+        """Clear SQLite history so a manual test run can re-evaluate the last 24 hours fresh."""
+        if self._dry_run:
+            logger.info("DRY-RUN modunda veritabanı sıfırlama atlandı.")
+            return 0
+        cleared = self._storage.clear_all()
+        logger.info(
+            "Veritabanı hafızası sıfırlandı (%d eski kayıt temizlendi); son %d saat baştan taranacak.",
+            cleared,
+            self._settings.max_article_age_hours,
+        )
+        return cleared
+
     def run_fetch_preview(self) -> ScanStats:
         """Fetch and run local pre-filter + deduplication without calling Gemini or Telegram."""
         sources = load_active_sources()

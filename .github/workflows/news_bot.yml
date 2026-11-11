@@ -28,6 +28,11 @@ on:
         required: false
         default: false
         type: boolean
+      reset_state:
+        description: "Hafızayı sıfırla (Test için önceki gönderilenleri unut ve son 24 saati baştan derle)"
+        required: false
+        default: false
+        type: boolean
 
 # Aynı anda iki zamanlanmış işin SQLite önbelleğini ezmesini engeller
 concurrency:
@@ -53,6 +58,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: SQLite Durum Veritabanını Önbellekten Geri Yükle
+        if: inputs.reset_state != true
         uses: actions/cache/restore@v4
         with:
           path: data
@@ -69,12 +75,15 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: |
           MODE="${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'auto' }}"
-          DRY_FLAG=""
+          EXTRA_FLAGS=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            DRY_FLAG="--dry-run"
+            EXTRA_FLAGS="$EXTRA_FLAGS --dry-run"
+          fi
+          if [ "${{ inputs.reset_state }}" = "true" ]; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --reset-state"
           fi
           mkdir -p data
-          python main.py --mode "$MODE" $DRY_FLAG
+          python main.py --mode "$MODE" $EXTRA_FLAGS
 
       - name: Güncel SQLite Veritabanını Önbelleğe Kaydet
         if: always() && inputs.dry_run != true

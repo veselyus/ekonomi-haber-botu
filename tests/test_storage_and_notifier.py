@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from news_bot.cli import build_parser
 from news_bot.models import (
     ArticleEvaluation,
     EnrichedArticle,
@@ -87,6 +88,15 @@ def test_storage_digest_lifecycle_and_slot_tracking(tmp_path: Path) -> None:
     assert storage.has_digest_slot_run(slot) is False
     storage.record_digest_slot_run(slot)
     assert storage.has_digest_slot_run(slot) is True
+
+    # Manual test reset clears both articles and digest slot records
+    deleted_count = storage.clear_all()
+    assert deleted_count == 2
+    assert storage.get_existing_ids_and_urls() == (set(), set())
+    assert storage.has_digest_slot_run(slot) is False
+
+    parsed_args = build_parser().parse_args(["--mode", "both", "--reset-state"])
+    assert parsed_args.reset_state is True
 
 
 def test_determine_due_digest_slot_respects_turkey_timezone() -> None:

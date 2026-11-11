@@ -43,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Telegram'a mesaj göndermeden ve veritabanını değiştirmeden konsolda önizleme yap.",
     )
+    parser.add_argument(
+        "--reset-state",
+        action="store_true",
+        help="Manuel test için veritabanı geçmişini temizleyerek son 24 saatin haberlerini sıfırdan derle.",
+    )
     return parser
 
 
@@ -65,6 +70,9 @@ def main(argv: list[str] | None = None) -> int:
     pipeline = NewsPipeline(settings, dry_run=args.dry_run)
 
     try:
+        if args.reset_state:
+            pipeline.reset_state()
+
         if args.mode == "fetch-preview":
             pipeline.run_fetch_preview()
         elif args.mode == "auto":

@@ -259,6 +259,13 @@ class ArticleStorage:
                 article_ids,
             )
 
+    def clear_all(self) -> int:
+        """Clear all stored articles and digest slot history (used for manual test resets)."""
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM articles")
+            conn.execute("DELETE FROM digest_runs")
+            return cursor.rowcount
+
     def prune_older_than(self, retention_days: int = 14) -> int:
         """Delete old records so the SQLite state file stays compact."""
         cutoff = (
