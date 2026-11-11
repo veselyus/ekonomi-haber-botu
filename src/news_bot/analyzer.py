@@ -156,6 +156,120 @@ TR_MACRO_KEYWORDS: tuple[str, ...] = (
     "s&p",
 )
 
+WORLD_MACRO_KEYWORDS: tuple[str, ...] = (
+    "fed",
+    "federal reserve",
+    "fomc",
+    "ecb",
+    "european central bank",
+    "avrupa merkez bankası",
+    "imf",
+    "world bank",
+    "dünya bankası",
+    "oecd",
+    "inflation",
+    "cpi",
+    "interest rate",
+    "rate cut",
+    "rate hike",
+    "gdp",
+    "recession",
+    "tariff",
+    "tarife",
+    "treasury",
+    "unemployment",
+    "payroll",
+    "central bank",
+    "boj",
+    "bank of england",
+    "eurozone",
+    "china",
+    "brent",
+    "opec",
+)
+
+DEFAULT_MODEL_CASCADE: tuple[str, ...] = (
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-4-argon",
+    "gemma-4-31b-it",
+)
+
+
+def build_model_cascade(primary_model: str) -> tuple[str, ...]:
+    """Order multi-pool failover cascade starting with primary_model without duplicates."""
+    ordered: list[str] = []
+    cleaned_primary = primary_model.strip() or DEFAULT_MODEL_CASCADE[0]
+    for candidate in (cleaned_primary, *DEFAULT_MODEL_CASCADE):
+        if candidate and candidate not in ordered:
+            ordered.append(candidate)
+    return tuple(ordered)
+
+
+def _generation_config_for_model(model_name: str) -> dict[str, Any] | None:
+    """Return compatible thinking_level config per Gemini model generation."""
+    normalized = model_name.strip().lower()
+    if normalized.startswith("gemini-4-"):
+        # Gemini 4 Argon/Carbon supports low/medium/high ('minimal' returns HTTP 400).
+        return {"thinking_level": "low"}
+    if normalized.startswith(
+        ("gemini-3.5-", "gemini-3.6-", "gemini-3.7-", "gemini-3.8-")
+    ):
+        return {"thinking_level": "minimal"}
+    return None
+
+
+def _is_auth_or_config_error(exc: BaseException) -> bool:
+    """Return True for non-retryable API key or permission errors."""
+    err = str(exc).lower()
+    return any(
+        token in err
+        for token in (
+            "401",
+            "403",
+            "api_key_invalid",
+            "api key not valid",
+            "permission_denied",
+            "unauthenticated",
+        )
+    )
+
+
+def _is_quota_exhausted_error(exc: BaseException) -> bool:
+    """Return True when a specific model's RPM/TPM/RPD quota returned 429."""
+    err = str(exc).lower()
+    return any(
+        token in err
+        for token in (
+            "429",
+            "resource_exhausted",
+            "too many requests",
+            "quota",
+        )
+    )
+
+
+def _is_transient_capacity_error(exc: BaseException) -> bool:
+    """Return True for temporary 503 high-demand spikes or network timeouts."""
+    err = str(exc).lower()
+    return any(
+        token in err
+        for token in (
+            "503",
+            "service_unavailable",
+            "unavailable",
+            "high demand",
+            "overloaded",
+            "500",
+            "502",
+            "504",
+            "timed out",
+            "timeout",
+            "connection",
+        )
+    )
+
 
 def enforce_category_domain_rules(
     raw: RawArticle,
@@ -328,7 +442,7 @@ def _extract_interaction_text(interaction: Any) -> str:
 
 
 def _strip_json_fences(raw_text: str) -> str:
-    """Remove optional markdown fences around JSON payload if present."""
+    """Remove optional markdown fences or surrounding text around JSON object."""
     cleaned = raw_text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
@@ -337,40 +451,92 @@ def _strip_json_fences(raw_text: str) -> str:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         cleaned = "\n".join(lines).strip()
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        cleaned = cleaned[first_brace : last_brace + 1]
     return cleaned
 
 
+def _heuristic_fallback_evaluate(batch: list[RawArticle]) -> BatchEvaluationResponse:
+    """
+    Emergency local rule-based Chief Editor fallback used ONLY if every single
+    Gemini/Gemma serving pool in the cascade is unreachable due to 503/429 outages.
+    Caps scores at 8 so false 10/10 critical alerts never fire.
+    """
+    evaluations: list[ArticleEvaluation] = []
+    for item in batch:
+        text = normalize_turkish_lower(f"{item.title} {item.summary}")
+        has_banking = any(kw in text for kw in BANKING_DOMAIN_KEYWORDS)
+        has_tr_macro = any(kw in text for kw in TR_MACRO_KEYWORDS)
+        has_world_macro = any(kw in text for kw in WORLD_MACRO_KEYWORDS)
+        has_non_bank_corp = any(comp in text for comp in NON_BANK_COMPANIES)
+        has_earnings_noise = any(kw in text for kw in CORPORATE_EARNINGS_NOISE_KEYWORDS)
+
+        if has_banking and item.language == "tr":
+            category = NewsCategory.TR_BANKING
+        elif (
+            has_tr_macro
+            and item.language == "tr"
+            and not (has_non_bank_corp and has_earnings_noise)
+        ):
+            category = NewsCategory.TR_ECONOMY
+        elif (
+            item.default_category == NewsCategory.WORLD_ECONOMY
+            or item.language == "en"
+        ) and has_world_macro:
+            category = NewsCategory.WORLD_ECONOMY
+        else:
+            category = NewsCategory.IRRELEVANT
+
+        is_relevant = category != NewsCategory.IRRELEVANT
+        score = (8 if item.authority_tier == 1 else 7) if is_relevant else 2
+        headline = " ".join(item.title.split()).strip() or "Ekonomi gelişmesi"
+
+        candidate_eval = ArticleEvaluation(
+            article_id=item.article_id,
+            is_relevant=is_relevant,
+            category=category,
+            importance_score=score,
+            duplicate_of_id=None,
+            turkish_headline=headline,
+            summary_text="",
+            impact_note="",
+        )
+        evaluations.append(enforce_category_domain_rules(item, candidate_eval))
+
+    return BatchEvaluationResponse(evaluations=evaluations)
+
+
 class GeminiNewsAnalyzer:
-    """Evaluates candidate articles in batches using the Gemini Interactions API."""
+    """Evaluates candidate articles in batches using multi-pool Gemini Interactions failover."""
 
     def __init__(
         self,
         *,
         api_key: str,
         model: str = "gemini-3.5-flash-lite",
-        batch_size: int = 36,
+        batch_size: int = 15,
         client: genai.Client | None = None,
+        cooldown_seconds: float = 6.0,
+        allow_heuristic_fallback: bool = True,
     ) -> None:
         self._model = model
-        self._fallback_model = (
-            "gemini-3.8-flash"
-            if model == "gemini-3.5-flash-lite"
-            else "gemini-3.5-flash-lite"
-        )
+        self._model_cascade: tuple[str, ...] = build_model_cascade(model)
+        self._quota_exhausted_models: set[str] = set()
         self._batch_size = batch_size
+        self._cooldown_seconds = cooldown_seconds
+        self._allow_heuristic_fallback = allow_heuristic_fallback
         if client is not None:
             self._client = client
         else:
-            # Override SDK's default 5-attempt internal retry loop so 503/429
-            # fails over to the backup model in seconds instead of hanging 15+ minutes
-            # or exhausting Free Tier TPM quota.
+            # attempts=1 sets internal max_retries=0 so Speakeasy's retry handler NEVER
+            # sleeps for minutes honoring Google's 429 Retry-After header or repeating 503s.
             self._client = genai.Client(
                 api_key=api_key,
                 http_options=types.HttpOptions(
                     retry_options=types.HttpRetryOptions(
-                        attempts=2,
-                        initial_delay=1.5,
-                        max_delay=4.0,
+                        attempts=1,
                     )
                 ),
             )
@@ -386,8 +552,8 @@ class GeminiNewsAnalyzer:
         known_headlines: list[str] = list(recent_headlines or [])
         total = len(articles)
         for start in range(0, total, self._batch_size):
-            if start > 0:
-                time.sleep(2.0)
+            if start > 0 and self._cooldown_seconds > 0:
+                time.sleep(min(1.5, self._cooldown_seconds))
             batch = articles[start : start + self._batch_size]
             batch_evals = self._evaluate_batch(batch, recent_headlines=known_headlines)
             results.update(batch_evals)
@@ -396,42 +562,118 @@ class GeminiNewsAnalyzer:
                     known_headlines.append(ev.turkish_headline)
         return results
 
-    def _call_model_once(self, prompt: str, model_name: str) -> Any:
-        return self._client.interactions.create(
-            model=model_name,
-            input=prompt,
-            system_instruction=EDITOR_SYSTEM_PROMPT,
-            generation_config={"thinking_level": "minimal"},
-            response_format={
-                "type": "text",
-                "mime_type": "application/json",
-                "schema": EVALUATION_JSON_SCHEMA,
-            },
-            store=False,
-            timeout=45.0,
-        )
-
-    def _call_gemini_interaction(self, prompt: str) -> Any:
-        try:
-            return self._call_model_once(prompt, self._model)
-        except Exception as primary_exc:
-            logger.warning(
-                "Birincil model (%s) yoğun/kota sınırında (%s); anında yedek modele (%s) geçiliyor...",
-                self._model,
-                primary_exc,
-                self._fallback_model,
+    def _call_model_once(self, prompt: str, model_name: str) -> BatchEvaluationResponse:
+        if model_name.strip().lower().startswith("gemma-"):
+            gemma_prompt = (
+                f"{EDITOR_SYSTEM_PROMPT}\n\n"
+                "ÇIKTI FORMATI KURALI: Yalnızca geçerli bir JSON nesnesi döndür; başka hiçbir açıklama yazma. "
+                'JSON şeması: {"evaluations": [{"article_id": "...", "is_relevant": true, '
+                '"category": "TR_ECONOMY|TR_BANKING|WORLD_ECONOMY|IRRELEVANT", '
+                '"importance_score": 8, "duplicate_of_id": "", "turkish_headline": "..."}]}\n\n'
+                f"{prompt}"
             )
+            interaction = self._client.interactions.create(
+                model=model_name,
+                input=gemma_prompt,
+                store=False,
+                timeout=35.0,
+            )
+        else:
+            kwargs: dict[str, Any] = {
+                "model": model_name,
+                "input": prompt,
+                "system_instruction": EDITOR_SYSTEM_PROMPT,
+                "response_format": {
+                    "type": "text",
+                    "mime_type": "application/json",
+                    "schema": EVALUATION_JSON_SCHEMA,
+                },
+                "store": False,
+                "timeout": 30.0,
+            }
+            gen_cfg = _generation_config_for_model(model_name)
+            if gen_cfg is not None:
+                kwargs["generation_config"] = gen_cfg
+            interaction = self._client.interactions.create(**kwargs)
+
+        raw_text = _strip_json_fences(_extract_interaction_text(interaction))
+        if not raw_text:
+            raise RuntimeError(f"Model ({model_name}) boş yanıt döndürdü.")
+        return BatchEvaluationResponse.model_validate_json(raw_text)
+
+    def _evaluate_with_cascade(
+        self,
+        prompt: str,
+        batch: list[RawArticle],
+    ) -> BatchEvaluationResponse:
+        active_models = [
+            m for m in self._model_cascade if m not in self._quota_exhausted_models
+        ]
+        if not active_models:
+            active_models = list(self._model_cascade)
+
+        transient_models: list[str] = []
+        last_exc: Exception | None = None
+        all_capacity_or_quota = True
+
+        for model_name in active_models:
             try:
-                return self._call_model_once(prompt, self._fallback_model)
-            except Exception as secondary_exc:
+                return self._call_model_once(prompt, model_name)
+            except Exception as exc:
+                if _is_auth_or_config_error(exc):
+                    raise
+                last_exc = exc
+                if _is_quota_exhausted_error(exc):
+                    self._quota_exhausted_models.add(model_name)
+                    logger.warning(
+                        "Model (%s) kota sınırına (429) ulaştı; beklemeden sıradaki bağımsız model havuzuna geçiliyor...",
+                        model_name,
+                    )
+                elif _is_transient_capacity_error(exc):
+                    transient_models.append(model_name)
+                    logger.warning(
+                        "Model (%s) anlık yoğunlukta (503/zaman aşımı); beklemeden sıradaki modele geçiliyor...",
+                        model_name,
+                    )
+                else:
+                    all_capacity_or_quota = False
+                    logger.warning(
+                        "Model (%s) beklenmeyen hata verdi (%s); sıradaki modele geçiliyor...",
+                        model_name,
+                        exc,
+                    )
+
+        # Single bounded cooldown pass on transient 503 models (never on 429 quota-exhausted models)
+        if transient_models:
+            if self._cooldown_seconds > 0:
                 logger.warning(
-                    "Yedek model (%s) de yanıt vermedi (%s); 6 sn beklenip %s ile son deneme yapılıyor...",
-                    self._fallback_model,
-                    secondary_exc,
-                    self._model,
+                    "Tüm birincil havuzlar meşgul; %.1f sn beklenip geçici yoğunluktaki modellere son deneme yapılıyor...",
+                    self._cooldown_seconds,
                 )
-                time.sleep(6.0)
-                return self._call_model_once(prompt, self._model)
+                time.sleep(self._cooldown_seconds)
+            for retry_model in transient_models[:2]:
+                try:
+                    return self._call_model_once(prompt, retry_model)
+                except Exception as retry_exc:
+                    if _is_auth_or_config_error(retry_exc):
+                        raise
+                    last_exc = retry_exc
+                    if not (
+                        _is_quota_exhausted_error(retry_exc)
+                        or _is_transient_capacity_error(retry_exc)
+                    ):
+                        all_capacity_or_quota = False
+
+        if self._allow_heuristic_fallback and all_capacity_or_quota:
+            logger.warning(
+                "Tüm yapay zeka model havuzları yoğun veya kota sınırında (503/429); "
+                "iş akışının çökmemesi için yerel kural tabanlı Baş Editör yedek değerlendirmesi devreye alındı."
+            )
+            return _heuristic_fallback_evaluate(batch)
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Değerlendirme yapılabilecek aktif model bulunamadı.")
 
     def _evaluate_batch(
         self,
@@ -446,7 +688,7 @@ class GeminiNewsAnalyzer:
                 "authority_tier": item.authority_tier,
                 "language": item.language,
                 "title": item.title,
-                "summary": item.summary[:320],
+                "summary": item.summary[:240],
             }
             for item in batch
         ]
@@ -466,13 +708,7 @@ class GeminiNewsAnalyzer:
             + json.dumps(payload_items, ensure_ascii=False, indent=2)
         )
 
-        interaction = self._call_gemini_interaction(prompt)
-
-        raw_text = _strip_json_fences(_extract_interaction_text(interaction))
-        if not raw_text:
-            raise RuntimeError("Gemini API boş yanıt döndürdü.")
-
-        parsed = BatchEvaluationResponse.model_validate_json(raw_text)
+        parsed = self._evaluate_with_cascade(prompt, batch)
         raw_by_id = {item.article_id: item for item in batch}
         valid_batch_ids = set(raw_by_id.keys())
         by_id: dict[str, ArticleEvaluation] = {}

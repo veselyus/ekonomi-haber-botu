@@ -349,34 +349,47 @@ def test_domain_guard_rejects_turkcell_from_banking_and_repairs_macro_to_tr_econ
 
 
 def test_gemini_analyzer_instant_failover_and_bounded_sdk_retries() -> None:
-    # 1) Verify real SDK client disables the 5-attempt internal retry storm (max_retries == 1)
+    # 1) Verify real SDK client sets max_retries == 0 (attempts=1) so Speakeasy NEVER sleeps on 429 Retry-After
     real_analyzer = GeminiNewsAnalyzer(api_key="dummy-key")
-    assert real_analyzer._client.interactions.sdk_configuration.retry_config.max_retries == 1
+    assert real_analyzer._client.interactions.sdk_configuration.retry_config.max_retries == 0
 
-    # 2) Verify 503/429 on primary model switches immediately on next call to fallback model
-    sample = _build_raw(
+    # 2) Verify multi-pool cascade (3.5-flash-lite 503 -> 3.1-flash-lite 503 -> 3.8-flash 429 -> 4-argon OK)
+    #    and verify Batch 2 skips the 429-exhausted model!
+    batch_one = _build_raw(
         "https://bddk.org.tr/duyuru-99",
         "BDDK zorunlu karşılık ve kredi düzenlemesini yayımladı",
         source_name="BDDK Resmi Duyurular",
         tier=1,
     )
-    called_models: list[str] = []
+    batch_two = _build_raw(
+        "https://tcmb.gov.tr/duyuru-100",
+        "TCMB haftalık para ve banka istatistiklerini yayımladı",
+        source_name="TCMB Resmi Duyurular",
+        tier=1,
+    )
+    calls: list[tuple[str, object]] = []
 
-    class FailoverInteractions:
+    class CascadeInteractions:
         def create(self, **kwargs: object) -> SimpleNamespace:
             model_name = str(kwargs["model"])
-            called_models.append(model_name)
-            if len(called_models) == 1:
-                raise RuntimeError("503 Service Unavailable")
+            gen_cfg = kwargs.get("generation_config")
+            calls.append((model_name, gen_cfg))
+            if model_name in {"gemini-3.5-flash-lite", "gemini-3.1-flash-lite"}:
+                raise RuntimeError("503 Service Unavailable: high demand")
+            if model_name == "gemini-3.8-flash":
+                raise RuntimeError("429 Too Many Requests: quota exhausted")
+
+            # Succeeds on gemini-4-argon!
+            target_id = batch_one.article_id if len(calls) <= 4 else batch_two.article_id
             payload = {
                 "evaluations": [
                     {
-                        "article_id": sample.article_id,
+                        "article_id": target_id,
                         "is_relevant": True,
-                        "category": "TR_BANKING",
-                        "importance_score": 9,
+                        "category": "TR_BANKING" if target_id == batch_one.article_id else "TR_ECONOMY",
+                        "importance_score": 8,
                         "duplicate_of_id": "",
-                        "turkish_headline": "BDDK kredi büyüme düzenlemesini yayımladı",
+                        "turkish_headline": "Kurum resmi düzenleme duyurusunu yayımladı",
                     }
                 ]
             }
@@ -385,9 +398,61 @@ def test_gemini_analyzer_instant_failover_and_bounded_sdk_retries() -> None:
     analyzer = GeminiNewsAnalyzer(
         api_key="fake",
         model="gemini-3.5-flash-lite",
-        client=SimpleNamespace(interactions=FailoverInteractions()),  # type: ignore[arg-type]
+        batch_size=1,
+        cooldown_seconds=0.0,
+        client=SimpleNamespace(interactions=CascadeInteractions()),  # type: ignore[arg-type]
     )
-    res = analyzer.evaluate_articles([sample])
-    assert called_models == ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
-    assert res[sample.article_id].is_relevant is True
+    res = analyzer.evaluate_articles([batch_one, batch_two])
+
+    # Batch 1 tried: 3.5-flash-lite (minimal) -> 3.1-flash-lite (None) -> 3.8-flash (minimal, 429!) -> 4-argon (low, OK!)
+    # Batch 2 skipped 3.8-flash because it hit 429 on Batch 1: 3.5-flash-lite -> 3.1-flash-lite -> 4-argon (OK!)
+    assert [m for m, _ in calls] == [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-4-argon",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-4-argon",
+    ]
+    assert calls[0][1] == {"thinking_level": "minimal"}
+    assert calls[1][1] is None
+    assert calls[3][1] == {"thinking_level": "low"}
+    assert res[batch_one.article_id].is_relevant is True
+    assert res[batch_two.article_id].is_relevant is True
+
+
+def test_emergency_heuristic_fallback_when_all_pools_hit_503_or_429() -> None:
+    bddk_item = _build_raw(
+        "https://bddk.org.tr/duyuru-201",
+        "BDDK ticari kredi büyüme sınırında değişiklik yaptı",
+        source_name="BDDK Resmi Duyurular",
+        tier=1,
+    )
+    turkcell_noise = _build_raw(
+        "https://bankadunyasi.com/turkcell-3c",
+        "Turkcell üçüncü çeyrek konsolide gelirini açıkladı",
+        source_name="Banka Dünyası",
+        tier=2,
+    )
+
+    class AllOverloadedInteractions:
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded")
+
+    analyzer = GeminiNewsAnalyzer(
+        api_key="fake",
+        batch_size=15,
+        cooldown_seconds=0.0,
+        allow_heuristic_fallback=True,
+        client=SimpleNamespace(interactions=AllOverloadedInteractions()),  # type: ignore[arg-type]
+    )
+    res = analyzer.evaluate_articles([bddk_item, turkcell_noise])
+
+    assert res[bddk_item.article_id].is_relevant is True
+    assert res[bddk_item.article_id].category == NewsCategory.TR_BANKING
+    assert res[bddk_item.article_id].importance_score == 8
+    assert res[turkcell_noise.article_id].is_relevant is False
+    assert res[turkcell_noise.article_id].category == NewsCategory.IRRELEVANT
+
 
