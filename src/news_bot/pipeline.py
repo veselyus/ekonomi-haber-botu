@@ -8,7 +8,11 @@ from datetime import datetime, time, timezone
 
 from news_bot.analyzer import GeminiNewsAnalyzer
 from news_bot.config import Settings
-from news_bot.deduplicator import deduplicate_candidates
+from news_bot.deduplicator import (
+    deduplicate_candidates,
+    deduplicate_enriched_articles,
+    suppress_post_eval_duplicates,
+)
 from news_bot.fetcher import NewsFetcher
 from news_bot.market import MarketDataFetcher
 from news_bot.models import EnrichedArticle, MarketQuote, NewsCategory
@@ -182,7 +186,18 @@ class NewsPipeline:
             model=self._settings.gemini_model,
             batch_size=self._settings.batch_size,
         )
-        evaluations_by_id = analyzer.evaluate_articles(candidates)
+        recent_headlines = self._storage.get_recent_relevant_headlines()
+        evaluations_by_id = analyzer.evaluate_articles(
+            candidates,
+            recent_headlines=recent_headlines,
+        )
+        evaluations_by_id, post_dedup_dropped = suppress_post_eval_duplicates(
+            candidates,
+            evaluations_by_id,
+            self._storage,
+            fuzzy_threshold=self._settings.fuzzy_duplicate_threshold,
+        )
+        dedup_dropped += post_dedup_dropped
 
         enriched_all: list[EnrichedArticle] = []
         critical_to_send: list[EnrichedArticle] = []
@@ -280,23 +295,35 @@ class NewsPipeline:
                 key=lambda x: x.evaluation.importance_score, reverse=True
             )
 
-        logger.info("Bülten kuyruğunda %d önemli haber bulundu.", len(pending))
+        unique_pending = deduplicate_enriched_articles(
+            pending,
+            fuzzy_threshold=self._settings.fuzzy_duplicate_threshold,
+        )
+        logger.info(
+            "Bülten kuyruğu -> Ham: %d | Tekilleştirme Sonrası: %d önemli haber.",
+            len(pending),
+            len(unique_pending),
+        )
 
         market_quotes: list[MarketQuote] = []
         if self._settings.include_market_snapshot:
             market_quotes = self._market_fetcher.fetch_snapshot()
 
         sent_ok = self._notifier.send_digest(
-            pending,
+            unique_pending,
             market_quotes=market_quotes,
             send_empty=self._settings.send_empty_digest,
         )
         if sent_ok and pending and not self._dry_run:
             self._storage.mark_digest_sent([item.raw.article_id for item in pending])
-            logger.info("%d haber bülten olarak gönderildi ve işaretlendi.", len(pending))
-            return len(pending)
+            logger.info(
+                "%d tekil haber bülten olarak gönderildi (%d kayıt işlendi).",
+                len(unique_pending),
+                len(pending),
+            )
+            return len(unique_pending)
 
-        return len(pending) if (sent_ok and pending) else 0
+        return len(unique_pending) if (sent_ok and unique_pending) else 0
 
     def run_auto(self, now_utc: datetime | None = None) -> None:
         """

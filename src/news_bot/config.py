@@ -34,9 +34,9 @@ class Settings(BaseSettings):
         default=24, ge=1, le=168, alias="MAX_ARTICLE_AGE_HOURS"
     )
     fuzzy_duplicate_threshold: float = Field(
-        default=80.0, ge=50.0, le=100.0, alias="FUZZY_DUPLICATE_THRESHOLD"
+        default=74.0, ge=50.0, le=100.0, alias="FUZZY_DUPLICATE_THRESHOLD"
     )
-    batch_size: int = Field(default=20, ge=1, le=40, alias="BATCH_SIZE")
+    batch_size: int = Field(default=40, ge=1, le=60, alias="BATCH_SIZE")
     max_candidates_per_scan: int = Field(
         default=40, ge=5, le=200, alias="MAX_CANDIDATES_PER_SCAN"
     )

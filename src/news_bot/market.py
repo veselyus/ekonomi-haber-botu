@@ -399,3 +399,4 @@ class MarketDataFetcher:
             ", ".join(yahoo_tickers),
         )
         return None
+

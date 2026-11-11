@@ -65,7 +65,32 @@ NOISE_HEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 )
 
 WHITESPACE_RE = re.compile(r"\s+")
-NON_WORD_TR_RE = re.compile(r"[^\w\sçğıöşü]", flags=re.UNICODE)
+NON_WORD_TR_RE = re.compile(r"[^\w\s.çğıöşü]", flags=re.UNICODE)
+STRAY_DOT_RE = re.compile(r"(?<!\d)\.|\.(?!\d)")
+APOSTROPHE_SUFFIX_RE = re.compile(r"['’ʼ`][a-zçğıöşü]+")
+DECIMAL_COMMA_RE = re.compile(r"(\d),(\d{1,2})\b")
+LEADING_PCT_RE = re.compile(r"%\s*(\d)")
+TRAILING_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+
+CANONICAL_SYNONYMS: tuple[tuple[str, str], ...] = (
+    ("türkiye cumhuriyet merkez bankası", "tcmb"),
+    ("bankacılık düzenleme ve denetleme kurumu", "bddk"),
+    ("türkiye bankalar birliği", "tbb"),
+    ("türkiye istatistik kurumu", "tüik"),
+    ("sermaye piyasası kurulu", "spk"),
+    ("hazine ve maliye bakanlığı", "hazine"),
+    ("abd merkez bankası", "fed"),
+    ("federal reserve", "fed"),
+    ("avrupa merkez bankası", "ecb"),
+    ("european central bank", "ecb"),
+    ("uluslararası para fonu", "imf"),
+    ("garanti bbva", "garanti"),
+    ("iş bankası", "işbankası"),
+    ("yapı kredi", "yapıkredi"),
+    ("kuveyt türk", "kuveyttürk"),
+    ("qnb finansbank", "qnb"),
+    ("qnb türkiye", "qnb"),
+)
 
 
 def normalize_turkish_lower(text: str) -> str:
@@ -74,9 +99,17 @@ def normalize_turkish_lower(text: str) -> str:
 
 
 def normalize_title_for_matching(title: str) -> str:
-    """Produce normalized alphanumeric text for fuzzy title deduplication."""
+    """Produce normalized canonical text for cross-source event deduplication."""
     lowered = normalize_turkish_lower(title)
+    lowered = APOSTROPHE_SUFFIX_RE.sub("", lowered)
+    for phrase, canonical in CANONICAL_SYNONYMS:
+        if phrase in lowered:
+            lowered = lowered.replace(phrase, canonical)
+    lowered = DECIMAL_COMMA_RE.sub(r"\1.\2", lowered)
+    lowered = LEADING_PCT_RE.sub(r"yüzde \1", lowered)
+    lowered = TRAILING_PCT_RE.sub(r"yüzde \1", lowered)
     cleaned = NON_WORD_TR_RE.sub(" ", lowered)
+    cleaned = STRAY_DOT_RE.sub(" ", cleaned)
     return WHITESPACE_RE.sub(" ", cleaned).strip()
 
 

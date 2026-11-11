@@ -74,7 +74,7 @@ DEFAULT_SOURCES: tuple[NewsSource, ...] = (
         ),
         source_type=SourceType.RSS,
         default_category=NewsCategory.TR_BANKING,
-        authority_tier=2,
+        authority_tier=3,
         language="tr",
     ),
     NewsSource(

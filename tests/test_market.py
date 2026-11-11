@@ -199,3 +199,4 @@ def test_turkish_formatting_and_market_snapshot_card() -> None:
 
     notifier = TelegramNotifier(bot_token="dummy", chat_id="123", dry_run=True)
     assert notifier.send_digest([], market_quotes=sample_quotes) is True
+

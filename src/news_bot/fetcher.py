@@ -57,6 +57,41 @@ def _extract_entry_datetime(entry: feedparser.FeedParserDict) -> datetime | None
     return None
 
 
+def _strip_aggregator_publisher_suffix(
+    title: str,
+    entry: feedparser.FeedParserDict,
+    source: NewsSource,
+) -> tuple[str, str]:
+    """
+    Remove trailing ' - Publisher' suffixes added by RSS aggregators (e.g. Google News)
+    so headline deduplication matches direct publisher feeds cleanly.
+    """
+    cleaned_title = title.strip()
+    effective_source_name = source.name
+
+    raw_entry_source = entry.get("source")
+    pub_title = ""
+    if isinstance(raw_entry_source, dict):
+        pub_title = clean_html_text(str(raw_entry_source.get("title", "")), max_chars=80)
+
+    if pub_title:
+        for sep in (" - ", " | ", " – ", " — "):
+            suffix = f"{sep}{pub_title}"
+            if cleaned_title.lower().endswith(suffix.lower()) and len(cleaned_title) > len(suffix) + 12:
+                cleaned_title = cleaned_title[: -len(suffix)].strip()
+                break
+        if source.id == "tr_banking_focus":
+            effective_source_name = pub_title
+    elif "news.google.com" in source.url and " - " in cleaned_title:
+        head, tail = cleaned_title.rsplit(" - ", 1)
+        if len(head.strip()) >= 15 and 2 <= len(tail.strip()) <= 40:
+            cleaned_title = head.strip()
+            if source.id == "tr_banking_focus":
+                effective_source_name = tail.strip()
+
+    return cleaned_title, effective_source_name
+
+
 class NewsFetcher:
     """Fetches raw articles across RSS feeds and official regulator pages."""
 
@@ -169,10 +204,13 @@ class NewsFetcher:
         parsed = feedparser.parse(raw_bytes)
         articles: list[RawArticle] = []
         for entry in parsed.entries[:max_items]:
-            title = clean_html_text(str(entry.get("title", "")), max_chars=300)
+            raw_title = clean_html_text(str(entry.get("title", "")), max_chars=300)
             link = str(entry.get("link", "")).strip()
-            if not title or not link:
+            if not raw_title or not link:
                 continue
+            title, effective_source_name = _strip_aggregator_publisher_suffix(
+                raw_title, entry, source
+            )
 
             canonical = canonicalize_url(urljoin(source.url, link))
             if not canonical:
@@ -188,7 +226,7 @@ class NewsFetcher:
                 RawArticle(
                     article_id=compute_article_id(canonical),
                     source_id=source.id,
-                    source_name=source.name,
+                    source_name=effective_source_name,
                     authority_tier=source.authority_tier,
                     language=source.language,
                     title=title,

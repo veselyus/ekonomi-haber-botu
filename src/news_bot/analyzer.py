@@ -39,9 +39,11 @@ PUANLAMA CETVELİ (importance_score: 1-10):
 - 7-9 (ÖNEMLİ - Sabah 08:00 Günlük Bülteni): Önemli makroekonomik veriler (cari denge, sanayi üretimi, ihracat, PMI, ABD istihdam/TÜFE), ekonomi yönetimi/TCMB/BDDK/TBB açıklamaları, haftalık bankacılık verileri, Türk bankalarının sendikasyon kredileri, tahvil ihraçları, bilançoları, üst düzey atamaları ve IMF/Dünya Bankası raporları.
 - 1-6 (DÜŞÜK ÖNEM - Gönderilmeyecek): Rutin günlük piyasa açılış/kapanış tekrarı, somut karar içermeyen tahmin/yorumlar, ikincil mikro haberler.
 
-MÜKERRER HABER KURALI (duplicate_of_id):
-- Aynı listede (farklı dilde veya farklı kaynakta olsa bile, örn. Fed'in İngilizce duyurusu ile Bloomberg HT'nin Türkçe haberi) AYNI OLAYI anlatan birden fazla haber varsa:
-  En yetkili kaynağa (authority_tier=1 resmi kurum öncelikli) tam değerlendirme yap (duplicate_of_id=""), diğer kopyalarda ise duplicate_of_id alanına o ana haberin article_id değerini yaz.
+MÜKERRER HABER KURALI (duplicate_of_id - ÇOK ÖNEMLİ):
+- Farklı haber kaynakları (ör. Bloomberg HT, Ekonomim, Dünya Gazetesi, Gazete Oksijen, Banka Dünyası, AA, TRT, Fed, CNBC) AYNI OLAYI, KARARI veya VERİYİ farklı başlıklarla yazabilir.
+- Aday listede aynı gerçek dünya olayını anlatan birden fazla haber varsa YALNIZCA EN YETKİLİ TEK BİR HABERE (authority_tier=1 resmi kurum > authority_tier=2 doğrudan basın > authority_tier=3 akış) is_relevant=true ve duplicate_of_id="" ver.
+- Aynı olayı anlatan DİĞER TÜM kopyalarda kesinlikle is_relevant=false yap ve duplicate_of_id alanına seçtiğin ana haberin article_id değerini yaz! Asla aynı olayı iki farklı kaynaktan geçirme!
+- Ayrıca sana verilen "DAHA ÖNCE YAYIMLANAN HABERLER" listesinde yer alan bir olayın aynısını veya devam tekrarını anlatan adaylar varsa duplicate_of_id alanına "PREVIOUS" yaz ve is_relevant=false yap.
 
 MANŞET BAŞLIK KURALLARI (ASD-STE100 BASİTLEŞTİRİLMİŞ TEKNİK DİL STANDARDI):
 Alt özet veya etki metni yazılmayacaktır; kullanıcı yalnızca senin yazacağın manşet başlığı (turkish_headline) görecektir. Bu nedenle turkish_headline alanını ASD-STE100 prensiplerine göre şu kurallarla yaz:
@@ -86,7 +88,7 @@ EVALUATION_JSON_SCHEMA: dict[str, Any] = {
                     },
                     "duplicate_of_id": {
                         "type": "string",
-                        "description": "Aynı listedeki başka bir haberin tekrarıysa ana haberin article_id değeri, değilse boş metin ('').",
+                        "description": "Aynı listedeki başka bir haberin tekrarıysa ana haberin article_id değeri, önceki bültenlerin tekrarıysa 'PREVIOUS', benzersizse boş metin ('').",
                     },
                     "turkish_headline": {
                         "type": "string",
@@ -145,7 +147,7 @@ class GeminiNewsAnalyzer:
         *,
         api_key: str,
         model: str = "gemini-3.5-flash-lite",
-        batch_size: int = 25,
+        batch_size: int = 40,
         client: genai.Client | None = None,
     ) -> None:
         self._model = model
@@ -158,17 +160,24 @@ class GeminiNewsAnalyzer:
         self._client = client or genai.Client(api_key=api_key)
 
     def evaluate_articles(
-        self, articles: list[RawArticle]
+        self,
+        articles: list[RawArticle],
+        *,
+        recent_headlines: list[str] | None = None,
     ) -> dict[str, ArticleEvaluation]:
         """Evaluate all candidate articles in batches and return mapping by article_id."""
         results: dict[str, ArticleEvaluation] = {}
+        known_headlines: list[str] = list(recent_headlines or [])
         total = len(articles)
         for start in range(0, total, self._batch_size):
             if start > 0:
                 time.sleep(1.5)
             batch = articles[start : start + self._batch_size]
-            batch_evals = self._evaluate_batch(batch)
+            batch_evals = self._evaluate_batch(batch, recent_headlines=known_headlines)
             results.update(batch_evals)
+            for ev in batch_evals.values():
+                if ev.is_relevant and ev.category != NewsCategory.IRRELEVANT and ev.turkish_headline:
+                    known_headlines.append(ev.turkish_headline)
         return results
 
     @retry(
@@ -205,7 +214,10 @@ class GeminiNewsAnalyzer:
             return self._call_model_once(prompt, self._fallback_model)
 
     def _evaluate_batch(
-        self, batch: list[RawArticle]
+        self,
+        batch: list[RawArticle],
+        *,
+        recent_headlines: list[str] | None = None,
     ) -> dict[str, ArticleEvaluation]:
         payload_items = [
             {
@@ -218,9 +230,19 @@ class GeminiNewsAnalyzer:
             }
             for item in batch
         ]
+        recent_section = ""
+        if recent_headlines:
+            bullet_lines = "\n".join(f"- {h}" for h in recent_headlines[:40])
+            recent_section = (
+                "DAHA ÖNCE YAYIMLANAN HABERLER (Bunlarla aynı olayı/veriyi anlatan adaylara "
+                "duplicate_of_id='PREVIOUS' ve is_relevant=false ver):\n"
+                f"{bullet_lines}\n\n"
+            )
+
         prompt = (
-            "Aşağıdaki aday haber listesini incele ve her bir article_id için eksiksiz "
-            "değerlendirme üret:\n\n"
+            recent_section
+            + "Aşağıdaki aday haber listesini incele, aynı olayı anlatan farklı kaynakları tekilleştir "
+            "ve her bir article_id için eksiksiz değerlendirme üret:\n\n"
             + json.dumps(payload_items, ensure_ascii=False, indent=2)
         )
 
@@ -237,12 +259,15 @@ class GeminiNewsAnalyzer:
         for evaluation in parsed.evaluations:
             if evaluation.article_id not in valid_batch_ids:
                 continue
-            # Enforce consistency if Gemini marked an item as a duplicate within the batch
-            if (
-                evaluation.duplicate_of_id
-                and evaluation.duplicate_of_id in valid_batch_ids
-                and evaluation.duplicate_of_id != evaluation.article_id
-            ):
+            dup_ref = (evaluation.duplicate_of_id or "").strip()
+            is_prev_dup = dup_ref.upper().startswith("PREV")
+            is_batch_dup = (
+                bool(dup_ref)
+                and dup_ref in valid_batch_ids
+                and dup_ref != evaluation.article_id
+            )
+            # Enforce consistency if Gemini marked an item as a duplicate
+            if is_prev_dup or is_batch_dup:
                 evaluation = evaluation.model_copy(
                     update={
                         "is_relevant": False,

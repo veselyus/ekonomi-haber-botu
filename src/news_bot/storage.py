@@ -88,16 +88,80 @@ class ArticleStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT article_id, normalized_title, authority_tier
+                SELECT article_id, normalized_title, turkish_headline, is_relevant, authority_tier
                 FROM articles
                 WHERE fetched_at >= ?
                 """,
                 (cutoff,),
             ).fetchall()
+        results: list[tuple[str, str, int]] = []
+        for r in rows:
+            art_id = str(r["article_id"])
+            tier = int(r["authority_tier"])
+            norm_raw = str(r["normalized_title"] or "")
+            if norm_raw:
+                results.append((art_id, norm_raw, tier))
+            if int(r["is_relevant"]) == 1 and r["turkish_headline"]:
+                norm_tr = normalize_title_for_matching(str(r["turkish_headline"]))
+                if norm_tr and norm_tr != norm_raw:
+                    results.append((art_id, norm_tr, tier))
+        return results
+
+    def get_recent_relevant_signatures(
+        self, lookback_hours: int = 48
+    ) -> list[tuple[str, str, str, int]]:
+        """
+        Return (article_id, norm_raw_title, norm_turkish_headline, authority_tier)
+        for recently accepted relevant articles.
+        """
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+        ).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT article_id, normalized_title, turkish_headline, authority_tier
+                FROM articles
+                WHERE fetched_at >= ?
+                  AND is_relevant = 1
+                  AND category != ?
+                """,
+                (cutoff, NewsCategory.IRRELEVANT.value),
+            ).fetchall()
         return [
-            (str(r["article_id"]), str(r["normalized_title"]), int(r["authority_tier"]))
+            (
+                str(r["article_id"]),
+                str(r["normalized_title"] or ""),
+                normalize_title_for_matching(str(r["turkish_headline"] or "")),
+                int(r["authority_tier"]),
+            )
             for r in rows
-            if r["normalized_title"]
+        ]
+
+    def get_recent_relevant_headlines(
+        self, lookback_hours: int = 36, limit: int = 35
+    ) -> list[str]:
+        """Return recent accepted Turkish headlines so Gemini can flag cross-scan duplicates."""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+        ).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT turkish_headline
+                FROM articles
+                WHERE fetched_at >= ?
+                  AND is_relevant = 1
+                  AND category != ?
+                ORDER BY fetched_at DESC
+                LIMIT ?
+                """,
+                (cutoff, NewsCategory.IRRELEVANT.value, limit),
+            ).fetchall()
+        return [
+            str(r["turkish_headline"]).strip()
+            for r in rows
+            if r["turkish_headline"] and str(r["turkish_headline"]).strip()
         ]
 
     def save_articles(self, items: list[EnrichedArticle]) -> None:

@@ -8,9 +8,25 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from news_bot.analyzer import GeminiNewsAnalyzer
-from news_bot.deduplicator import deduplicate_candidates
-from news_bot.models import NewsCategory, RawArticle
-from news_bot.prefilter import canonicalize_url, compute_article_id
+from news_bot.deduplicator import (
+    compute_headline_similarity,
+    deduplicate_candidates,
+    deduplicate_enriched_articles,
+    suppress_post_eval_duplicates,
+)
+from news_bot.fetcher import _strip_aggregator_publisher_suffix
+from news_bot.models import (
+    ArticleEvaluation,
+    EnrichedArticle,
+    NewsCategory,
+    NewsSource,
+    RawArticle,
+)
+from news_bot.prefilter import (
+    canonicalize_url,
+    compute_article_id,
+    normalize_title_for_matching,
+)
 from news_bot.storage import ArticleStorage
 
 
@@ -139,4 +155,136 @@ def test_gemini_analyzer_parses_structured_output_and_suppresses_cross_lang_dupl
     # Cross-language duplicate automatically suppressed so user isn't pinged twice!
     assert results[tr_copy.article_id].duplicate_of_id == fed_official.article_id
     assert results[tr_copy.article_id].is_relevant is False
+
+
+def test_paraphrased_same_event_across_two_sources_is_deduplicated_while_different_banks_stay_separate(
+    tmp_path: Path,
+) -> None:
+    storage = ArticleStorage(tmp_path / "cross_source.db")
+
+    # Same inflation story written differently by two outlets
+    aa_inflation = _build_raw(
+        "https://aa.com.tr/tr/ekonomi/enflasyon-ekim",
+        "TÜİK ekim ayı enflasyon rakamlarını açıkladı: Yıllık yüzde 48,58 oldu",
+        source_name="Anadolu Ajansı Ekonomi",
+        tier=2,
+    )
+    bht_inflation = _build_raw(
+        "https://bloomberght.com/ekim-enflasyonu-aciklandi",
+        "Ekim ayında tüketici enflasyonu aylık %2,88, yıllık %48,58 seviyesinde gerçekleşti",
+        source_name="Bloomberg HT",
+        tier=2,
+    )
+    # Different TÜİK release with different figure must NOT be merged
+    tuik_industrial = _build_raw(
+        "https://ekonomim.com/sanayi-uretimi-eylul",
+        "TÜİK eylül ayı sanayi üretimi endeksini yıllık yüzde 2,4 düşüşle açıkladı",
+        source_name="Ekonomim",
+        tier=2,
+    )
+    # Two DIFFERENT banks taking identical-sized syndication loans must BOTH pass!
+    akbank_loan = _build_raw(
+        "https://bankadunyasi.com/akbank-sendikasyon",
+        "Akbank uluslararası piyasalardan 500 milyon dolar sendikasyon kredisi sağladı",
+        source_name="Banka Dünyası",
+        tier=2,
+    )
+    garanti_loan = _build_raw(
+        "https://dunya.com/garanti-sendikasyon",
+        "Garanti BBVA uluslararası piyasalardan 500 milyon dolar sendikasyon kredisi sağladı",
+        source_name="Dünya Gazetesi",
+        tier=2,
+    )
+
+    accepted, dropped = deduplicate_candidates(
+        [aa_inflation, bht_inflation, tuik_industrial, akbank_loan, garanti_loan],
+        storage,
+        fuzzy_threshold=74.0,
+    )
+    assert dropped == 1
+    assert len(accepted) == 4
+    accepted_urls = {a.url for a in accepted}
+    assert "https://ekonomim.com/sanayi-uretimi-eylul" in accepted_urls
+    assert "https://bankadunyasi.com/akbank-sendikasyon" in accepted_urls
+    assert "https://dunya.com/garanti-sendikasyon" in accepted_urls
+
+
+def test_post_eval_and_digest_dedup_catch_missed_gemini_duplicates(
+    tmp_path: Path,
+) -> None:
+    storage = ArticleStorage(tmp_path / "post_eval.db")
+
+    src_one = _build_raw(
+        "https://bddk.org.tr/duyuru-kredi-1",
+        "Kurul Kararı: Ticari kredi büyüme sınırı hakkında basın açıklaması",
+        source_name="BDDK Resmi Duyurular",
+        tier=1,
+    )
+    src_two = _build_raw(
+        "https://gazeteoksijen.com/ekonomi/bddkdan-ticari-kredilere-yeni-sinir",
+        "Bankacılık Düzenleme ve Denetleme Kurumu'ndan ticari kredilere fren",
+        source_name="Gazete Oksijen",
+        tier=2,
+    )
+
+    # Suppose raw headlines looked too different before Gemini, and Gemini forgot duplicate_of_id,
+    # producing standardized ASD-STE100 headlines for both:
+    evals = {
+        src_one.article_id: ArticleEvaluation(
+            article_id=src_one.article_id,
+            is_relevant=True,
+            category=NewsCategory.TR_BANKING,
+            importance_score=9,
+            duplicate_of_id=None,
+            turkish_headline="BDDK ticari kredi aylık büyüme sınırını yüzde 1,5 seviyesine indirdi",
+        ),
+        src_two.article_id: ArticleEvaluation(
+            article_id=src_two.article_id,
+            is_relevant=True,
+            category=NewsCategory.TR_BANKING,
+            importance_score=8,
+            duplicate_of_id=None,
+            turkish_headline="BDDK ticari kredilerde aylık büyüme oranını yüzde 1,5 seviyesine çekti",
+        ),
+    }
+
+    cleaned_evals, suppressed = suppress_post_eval_duplicates(
+        [src_two, src_one], evals, storage, fuzzy_threshold=74.0
+    )
+    assert suppressed == 1
+    assert cleaned_evals[src_one.article_id].is_relevant is True
+    assert cleaned_evals[src_two.article_id].is_relevant is False
+    assert cleaned_evals[src_two.article_id].duplicate_of_id == src_one.article_id
+
+    # Also verify digest-time gate cleans legacy duplicates already in queue
+    legacy_queue = [
+        EnrichedArticle(raw=src_two, evaluation=evals[src_two.article_id], queued_for_digest=True),
+        EnrichedArticle(raw=src_one, evaluation=evals[src_one.article_id], queued_for_digest=True),
+    ]
+    unique_digest = deduplicate_enriched_articles(legacy_queue, fuzzy_threshold=74.0)
+    assert len(unique_digest) == 1
+    assert unique_digest[0].raw.source_name == "BDDK Resmi Duyurular"
+
+
+def test_google_news_aggregator_publisher_suffix_is_stripped() -> None:
+    agg_source = NewsSource(
+        id="tr_banking_focus",
+        name="Türkiye Bankacılık & BDDK Akışı",
+        url="https://news.google.com/rss/search?q=BDDK",
+        default_category=NewsCategory.TR_BANKING,
+        authority_tier=3,
+    )
+    entry = {"source": {"title": "BloombergHT"}}
+    cleaned_title, effective_source = _strip_aggregator_publisher_suffix(
+        "BDDK ticari kredilerde büyüme sınırını düşürdü - BloombergHT",
+        entry,  # type: ignore[arg-type]
+        agg_source,
+    )
+    assert cleaned_title == "BDDK ticari kredilerde büyüme sınırını düşürdü"
+    assert effective_source == "BloombergHT"
+
+    # Full institutional synonym + apostrophe normalization check
+    norm_a = normalize_title_for_matching("ABD Merkez Bankası'ndan %4,50 faiz kararı")
+    norm_b = normalize_title_for_matching("Fed'den yüzde 4,50 faiz kararı")
+    assert compute_headline_similarity(norm_a, norm_b) >= 90.0
 
