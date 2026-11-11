@@ -8,12 +8,7 @@ import time
 from typing import Any
 
 from google import genai
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+from google.genai import types
 
 from news_bot.models import (
     ArticleEvaluation,
@@ -352,18 +347,33 @@ class GeminiNewsAnalyzer:
         self,
         *,
         api_key: str,
-        model: str = "gemini-3.8-flash",
-        batch_size: int = 45,
+        model: str = "gemini-3.5-flash-lite",
+        batch_size: int = 36,
         client: genai.Client | None = None,
     ) -> None:
         self._model = model
         self._fallback_model = (
-            "gemini-3.5-flash-lite"
-            if model == "gemini-3.8-flash"
-            else "gemini-3.8-flash"
+            "gemini-3.8-flash"
+            if model == "gemini-3.5-flash-lite"
+            else "gemini-3.5-flash-lite"
         )
         self._batch_size = batch_size
-        self._client = client or genai.Client(api_key=api_key)
+        if client is not None:
+            self._client = client
+        else:
+            # Override SDK's default 5-attempt internal retry loop so 503/429
+            # fails over to the backup model in seconds instead of hanging 15+ minutes
+            # or exhausting Free Tier TPM quota.
+            self._client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(
+                    retry_options=types.HttpRetryOptions(
+                        attempts=2,
+                        initial_delay=1.5,
+                        max_delay=4.0,
+                    )
+                ),
+            )
 
     def evaluate_articles(
         self,
@@ -377,7 +387,7 @@ class GeminiNewsAnalyzer:
         total = len(articles)
         for start in range(0, total, self._batch_size):
             if start > 0:
-                time.sleep(1.5)
+                time.sleep(2.0)
             batch = articles[start : start + self._batch_size]
             batch_evals = self._evaluate_batch(batch, recent_headlines=known_headlines)
             results.update(batch_evals)
@@ -386,26 +396,19 @@ class GeminiNewsAnalyzer:
                     known_headlines.append(ev.turkish_headline)
         return results
 
-    @retry(
-        reraise=True,
-        stop=stop_after_attempt(2),
-        wait=wait_exponential(multiplier=2, min=2, max=8),
-        retry=retry_if_exception_type(Exception),
-    )
     def _call_model_once(self, prompt: str, model_name: str) -> Any:
-        thinking = "minimal" if "lite" in model_name else "low"
         return self._client.interactions.create(
             model=model_name,
             input=prompt,
             system_instruction=EDITOR_SYSTEM_PROMPT,
-            generation_config={"thinking_level": thinking},
+            generation_config={"thinking_level": "minimal"},
             response_format={
                 "type": "text",
                 "mime_type": "application/json",
                 "schema": EVALUATION_JSON_SCHEMA,
             },
             store=False,
-            timeout=120.0,
+            timeout=45.0,
         )
 
     def _call_gemini_interaction(self, prompt: str) -> Any:
@@ -413,12 +416,22 @@ class GeminiNewsAnalyzer:
             return self._call_model_once(prompt, self._model)
         except Exception as primary_exc:
             logger.warning(
-                "Birincil model (%s) yanıt vermedi (%s); yedek modele (%s) geçiliyor...",
+                "Birincil model (%s) yoğun/kota sınırında (%s); anında yedek modele (%s) geçiliyor...",
                 self._model,
                 primary_exc,
                 self._fallback_model,
             )
-            return self._call_model_once(prompt, self._fallback_model)
+            try:
+                return self._call_model_once(prompt, self._fallback_model)
+            except Exception as secondary_exc:
+                logger.warning(
+                    "Yedek model (%s) de yanıt vermedi (%s); 6 sn beklenip %s ile son deneme yapılıyor...",
+                    self._fallback_model,
+                    secondary_exc,
+                    self._model,
+                )
+                time.sleep(6.0)
+                return self._call_model_once(prompt, self._model)
 
     def _evaluate_batch(
         self,
@@ -433,7 +446,7 @@ class GeminiNewsAnalyzer:
                 "authority_tier": item.authority_tier,
                 "language": item.language,
                 "title": item.title,
-                "summary": item.summary,
+                "summary": item.summary[:320],
             }
             for item in batch
         ]

@@ -347,3 +347,47 @@ def test_domain_guard_rejects_turkcell_from_banking_and_repairs_macro_to_tr_econ
     assert fixed_akbank.is_relevant is True
     assert fixed_akbank.category == NewsCategory.TR_BANKING
 
+
+def test_gemini_analyzer_instant_failover_and_bounded_sdk_retries() -> None:
+    # 1) Verify real SDK client disables the 5-attempt internal retry storm (max_retries == 1)
+    real_analyzer = GeminiNewsAnalyzer(api_key="dummy-key")
+    assert real_analyzer._client.interactions.sdk_configuration.retry_config.max_retries == 1
+
+    # 2) Verify 503/429 on primary model switches immediately on next call to fallback model
+    sample = _build_raw(
+        "https://bddk.org.tr/duyuru-99",
+        "BDDK zorunlu karşılık ve kredi düzenlemesini yayımladı",
+        source_name="BDDK Resmi Duyurular",
+        tier=1,
+    )
+    called_models: list[str] = []
+
+    class FailoverInteractions:
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            model_name = str(kwargs["model"])
+            called_models.append(model_name)
+            if len(called_models) == 1:
+                raise RuntimeError("503 Service Unavailable")
+            payload = {
+                "evaluations": [
+                    {
+                        "article_id": sample.article_id,
+                        "is_relevant": True,
+                        "category": "TR_BANKING",
+                        "importance_score": 9,
+                        "duplicate_of_id": "",
+                        "turkish_headline": "BDDK kredi büyüme düzenlemesini yayımladı",
+                    }
+                ]
+            }
+            return SimpleNamespace(output_text=json.dumps(payload, ensure_ascii=False))
+
+    analyzer = GeminiNewsAnalyzer(
+        api_key="fake",
+        model="gemini-3.5-flash-lite",
+        client=SimpleNamespace(interactions=FailoverInteractions()),  # type: ignore[arg-type]
+    )
+    res = analyzer.evaluate_articles([sample])
+    assert called_models == ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
+    assert res[sample.article_id].is_relevant is True
+
