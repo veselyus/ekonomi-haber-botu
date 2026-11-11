@@ -1,6 +1,6 @@
 # Sıfır Gürültülü Ekonomi & Bankacılık Haber Botu
 
-**Türkiye Ekonomisi**, **Türkiye Bankacılık Sektörü** ve **Dünya Ekonomisi** başlıklarındaki gelişmeleri birincil kurumlar ve güvenilir finans kaynaklarından otomatik çeken, tık tuzaklarını ve mükerrer haberleri eleyen, **Google Gemini API (`gemini-3.8-flash`)** ile puanlayıp özetleyen ve **Telegram** üzerinden ileten bulut tabanlı haber botu.
+**Türkiye Ekonomisi**, **Türkiye Bankacılık Sektörü** ve **Dünya Ekonomisi** başlıklarındaki gelişmeleri birincil kurumlar ve güvenilir finans kaynaklarından otomatik çeken, tık tuzaklarını ve mükerrer haberleri eleyen, **Google Gemini API (`gemini-3.5-flash-lite` / yedek `gemini-3.8-flash`)** ile puanlayıp ASD-STE100 standardında sade manşetlere dönüştüren ve canlı **Piyasa Özeti** ile birlikte **Telegram** üzerinden ileten bulut tabanlı haber botu.
 
 ---
 
@@ -15,9 +15,10 @@
 3. **Otorite Öncelikli Tekilleştirme (`src/news_bot/deduplicator.py` & `storage.py`)**
    * `SQLite` ve `RapidFuzz` ile aynı olayı anlatan haberleri karşılaştırır; resmi kurum duyurularına (`Tier 1`) öncelik verir.
    * Farklı dillerdeki aynı haberleri (ör. Fed'in İngilizce duyurusu ile yerel basındaki Türkçe çevirisi) Gemini değerlendirme katmanında `duplicate_of_id` ile yakalar.
-4. **Gemini Baş Editör & 3 Ayrı Kategori Bülteni (`analyzer.py` & `notifier.py`)**
+4. **Gemini Baş Editör, Canlı Piyasa Özeti & 3 Ayrı Kategori Bülteni (`analyzer.py`, `market.py` & `notifier.py`)**
+   * **Canlı Piyasa Özeti (24 Saatlik Değişim):** Her bültenin başında **Dolar/TL**, **Euro/TL**, **Euro/Dolar**, **Gram Altın (TL)**, **Ons Altın (USD)**, **Brent Petrol (USD)**, **BIST 100** ve **BIST Bankacılık** göstergelerinin güncel değerleri ve **24 saatlik yüzdesel değişimleri** (`🟢 +%...` / `🔴 -%...`) ayrı bir özet kartı olarak gönderilir.
    * **ASD-STE100 Açıklayıcı Manşetler:** Alt metin veya yorum kalabalığı olmadan, her haber sonucu ve rakamı doğrudan veren sade ve etken çatılı tek bir manşet başlık + tıklanabilir kaynak bağlantısı olarak sunulur.
-   * **Sabah 08:00 TSİ 3 Ayrı Kategori Mesajı (`7–9` puan):** Biriken haberler her sabah **08:00 TSİ**'de sırasıyla **1) Türkiye Bankacılık Sektörü**, **2) Türkiye Ekonomisi** ve **3) Dünya Ekonomisi** olmak üzere 3 ayrı mesaj halinde gönderilir.
+   * **Sabah 08:00 TSİ Bülteni (`7–9` puan):** Biriken haberler her sabah **08:00 TSİ**'de **Piyasa Özeti** kartının hemen ardından sırasıyla **1) Türkiye Bankacılık Sektörü**, **2) Türkiye Ekonomisi** ve **3) Dünya Ekonomisi** olmak üzere ayrı mesajlar halinde gönderilir.
    * **Olağanüstü Kritik Karar Alarmı (`10/10` puan):** Saat **11:00 TSİ**, **15:00 TSİ** ve **22:30 TSİ** kontrollerinde yalnızca `10/10` puanlık olağanüstü resmi kararlar varsa anında `🚨 KRİTİK HABER` mesajıyla iletilir; aksi halde kanal sessiz kalır.
    * **1–6 Puan / Kapsam Dışı:** Veritabanına işlenip sessizce elenir; bir sonraki taramada tekrar değerlendirilmez.
 

@@ -136,3 +136,15 @@ class EnrichedArticle(BaseModel):
     instant_sent: bool = False
     queued_for_digest: bool = False
     digest_sent: bool = False
+
+
+class MarketQuote(BaseModel):
+    """Live snapshot of a financial instrument with its 24-hour percentage change."""
+
+    symbol_id: str
+    icon: str
+    label: str
+    price: float
+    change_pct_24h: float
+    unit_suffix: str = ""
+    decimals: int = Field(default=2, ge=0, le=6)

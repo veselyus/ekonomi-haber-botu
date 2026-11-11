@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from news_bot.models import EnrichedArticle, NewsCategory
+from news_bot.models import EnrichedArticle, MarketQuote, NewsCategory
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,53 @@ def _clean_single_line(raw_text: str) -> str:
     """Normalize headline text into a clean single line without trailing punctuation clutter."""
     cleaned = re.sub(r"\s+", " ", raw_text).strip()
     return re.sub(r"^(?:[•\-*]|\d+[.)])\s*", "", cleaned).strip()
+
+
+def format_turkish_number(value: float, decimals: int = 2) -> str:
+    """Format a float with Turkish '.' thousands and ',' decimal separators."""
+    us_formatted = f"{value:,.{decimals}f}"
+    return us_formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def format_change_badge(change_pct: float) -> str:
+    """Render 24-hour percentage change with directional trend icon in Turkish format."""
+    rounded = round(change_pct, 2)
+    abs_str = format_turkish_number(abs(rounded), 2)
+    if rounded > 0:
+        return f"🟢 +%{abs_str}"
+    if rounded < 0:
+        return f"🔴 -%{abs_str}"
+    return f"⚪ %{abs_str}"
+
+
+def format_market_snapshot(
+    quotes: list[MarketQuote],
+    *,
+    now: datetime | None = None,
+) -> str:
+    """Format live financial indicators and 24-hour % changes as a Telegram HTML card."""
+    if not quotes:
+        return ""
+
+    local_now = (now or datetime.now(timezone.utc)).astimezone(TURKEY_TZ)
+    timestamp_str = local_now.strftime("%d.%m.%Y | %H:%M TSİ")
+
+    lines: list[str] = [
+        "📊 <b>Piyasa Özeti (24 Saatlik Değişim)</b>",
+        f"🗓 <i>{timestamp_str}</i>",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    for quote in quotes:
+        safe_label = html.escape(quote.label)
+        safe_suffix = html.escape(quote.unit_suffix)
+        price_str = format_turkish_number(quote.price, quote.decimals)
+        badge = format_change_badge(quote.change_pct_24h)
+        lines.append(
+            f"{quote.icon} <b>{safe_label}:</b> {price_str}{safe_suffix} ({badge})"
+        )
+
+    return "\n".join(lines)
 
 
 def format_critical_alert(item: EnrichedArticle) -> str:
@@ -158,19 +205,28 @@ class TelegramNotifier:
         self,
         items: list[EnrichedArticle],
         *,
+        market_quotes: list[MarketQuote] | None = None,
         send_empty: bool = False,
     ) -> bool:
-        """Send separate category digest messages in order."""
-        if not items:
-            if send_empty:
-                return self._send_html(
-                    "📊 <b>Günlük Ekonomi &amp; Bankacılık Bülteni</b>\n"
-                    "Son 24 saatte eşik değerini aşan yeni bir gelişme bulunmadı."
-                )
+        """Send live market snapshot card followed by separate category digest messages."""
+        messages: list[str] = []
+        if market_quotes:
+            snapshot_msg = format_market_snapshot(market_quotes)
+            if snapshot_msg:
+                messages.append(snapshot_msg)
+
+        if items:
+            messages.extend(format_digest_messages(items))
+        elif send_empty and not messages:
+            messages.append(
+                "📊 <b>Günlük Ekonomi &amp; Bankacılık Bülteni</b>\n"
+                "Son 24 saatte eşik değerini aşan yeni bir gelişme bulunmadı."
+            )
+
+        if not messages:
             logger.info("Bülten kuyruğunda gönderilecek yeni haber yok; sessiz kalındı.")
             return False
 
-        messages = format_digest_messages(items)
         for index, msg in enumerate(messages):
             if index > 0 and not self._dry_run:
                 time.sleep(0.3)

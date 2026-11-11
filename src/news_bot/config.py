@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     )
     retention_days: int = Field(default=14, ge=2, le=90, alias="RETENTION_DAYS")
     send_empty_digest: bool = Field(default=False, alias="SEND_EMPTY_DIGEST")
+    include_market_snapshot: bool = Field(
+        default=True, alias="INCLUDE_MARKET_SNAPSHOT"
+    )
 
     database_path: Path = Field(
         default=Path("data/news_state.db"), alias="DATABASE_PATH"

@@ -10,8 +10,9 @@ from news_bot.analyzer import GeminiNewsAnalyzer
 from news_bot.config import Settings
 from news_bot.deduplicator import deduplicate_candidates
 from news_bot.fetcher import NewsFetcher
-from news_bot.models import EnrichedArticle, NewsCategory
-from news_bot.notifier import TURKEY_TZ, TelegramNotifier
+from news_bot.market import MarketDataFetcher
+from news_bot.models import EnrichedArticle, MarketQuote, NewsCategory
+from news_bot.notifier import TURKEY_TZ, TelegramNotifier, format_market_snapshot
 from news_bot.prefilter import prefilter_articles
 from news_bot.sources import load_active_sources
 from news_bot.storage import ArticleStorage
@@ -62,6 +63,9 @@ class NewsPipeline:
             dry_run=dry_run,
             timeout_seconds=settings.http_timeout_seconds,
         )
+        self._market_fetcher = MarketDataFetcher(
+            timeout_seconds=settings.http_timeout_seconds
+        )
         self._dry_run_digest_buffer: list[EnrichedArticle] = []
 
     def run_fetch_preview(self) -> ScanStats:
@@ -103,6 +107,15 @@ class NewsPipeline:
                 item.source_name,
                 item.title,
             )
+
+        if self._settings.include_market_snapshot:
+            market_quotes = self._market_fetcher.fetch_snapshot()
+            if market_quotes:
+                logger.info(
+                    "Piyasa Özeti Önizleme:\n%s",
+                    format_market_snapshot(market_quotes),
+                )
+
         return ScanStats(
             fetched_count=len(raw_articles),
             prefiltered_dropped=prefiltered_dropped,
@@ -269,8 +282,14 @@ class NewsPipeline:
 
         logger.info("Bülten kuyruğunda %d önemli haber bulundu.", len(pending))
 
+        market_quotes: list[MarketQuote] = []
+        if self._settings.include_market_snapshot:
+            market_quotes = self._market_fetcher.fetch_snapshot()
+
         sent_ok = self._notifier.send_digest(
-            pending, send_empty=self._settings.send_empty_digest
+            pending,
+            market_quotes=market_quotes,
+            send_empty=self._settings.send_empty_digest,
         )
         if sent_ok and pending and not self._dry_run:
             self._storage.mark_digest_sent([item.raw.article_id for item in pending])
