@@ -18,8 +18,8 @@
 4. **Gemini Baş Editör, Canlı Piyasa Özeti & 3 Ayrı Kategori Bülteni (`analyzer.py`, `market.py` & `notifier.py`)**
    * **Canlı Piyasa Özeti (24 Saatlik Değişim):** Her bültenin başında **Dolar/TL**, **Euro/TL**, **Euro/Dolar**, **Gram Altın (TL)**, **Ons Altın (USD)**, **Brent Petrol (USD)**, **BIST 100** ve **BIST Bankacılık** göstergelerinin güncel değerleri ve **24 saatlik yüzdesel değişimleri** (`🟢 +%...` / `🔴 -%...`) ayrı bir özet kartı olarak gönderilir.
    * **ASD-STE100 Açıklayıcı Manşetler:** Alt metin veya yorum kalabalığı olmadan, her haber sonucu ve rakamı doğrudan veren sade ve etken çatılı tek bir manşet başlık + tıklanabilir kaynak bağlantısı olarak sunulur.
-   * **Sabah 08:00 TSİ Bülteni (`7–9` puan):** Biriken haberler her sabah **08:00 TSİ**'de **Piyasa Özeti** kartının hemen ardından sırasıyla **1) Türkiye Bankacılık Sektörü**, **2) Türkiye Ekonomisi** ve **3) Dünya Ekonomisi** olmak üzere ayrı mesajlar halinde gönderilir.
-   * **Olağanüstü Kritik Karar Alarmı (`10/10` puan):** Saat **11:00 TSİ**, **15:00 TSİ** ve **22:30 TSİ** kontrollerinde yalnızca `10/10` puanlık olağanüstü resmi kararlar varsa anında `🚨 KRİTİK HABER` mesajıyla iletilir; aksi halde kanal sessiz kalır.
+   * **Sabah Bülteni (`7–9` puan, Yedekli `07:46–08:37 TSİ` Tetikleme):** GitHub Actions cron gecikmelerine karşı sabah **07:46, 07:54, 08:03, 08:12, 08:22 ve 08:37 TSİ**'de yedekli tetikleme bulunur. İlk çalışan görev **Piyasa Özeti** kartının hemen ardından sırasıyla **1) Türkiye Bankacılık Sektörü**, **2) Türkiye Ekonomisi** ve **3) Dünya Ekonomisi** mesajlarını gönderip günlük kilidi yazar; sonraki yedek tetiklemeler API kotası harcamadan 1 saniyede kapanır.
+   * **Olağanüstü Kritik Karar Alarmı (`10/10` puan):** Saat **11:07 TSİ**, **15:07 TSİ** ve **22:37 TSİ** kontrollerinde yalnızca `10/10` puanlık olağanüstü resmi kararlar varsa anında `🚨 KRİTİK HABER` mesajıyla iletilir; aksi halde kanal sessiz kalır.
    * **1–6 Puan / Kapsam Dışı:** Veritabanına işlenip sessizce elenir; bir sonraki taramada tekrar değerlendirilmez.
 
 ---
@@ -52,7 +52,7 @@ Proje `.github/workflows/news_bot.yml` iş akışıyla hazır gelir:
    * `TELEGRAM_BOT_TOKEN`
    * `TELEGRAM_CHAT_ID`
 3. **Actions** sekmesine geçin, iş akışını etkinleştirin ve hemen test etmek için **Economy & Banking News Bot → Run workflow** butonuna tıklayıp `both` modunu seçerek çalıştırın.
-   * Bundan sonra bot **her 30 dakikada bir** otomatik uyanır, SQLite hafızasını GitHub Actions önbelleğinden (`actions/cache`) yükler, kritik haberleri anında atar ve sabah/akşam bülten saatlerinde özet bülteni gönderir.
+   * Bundan sonra bot sabah bülteni diliminde (**07:46–08:37 TSİ** yedekli) ve gün içi stratejik saatlerde (**11:07, 15:07, 22:37 TSİ**) otomatik uyanır, SQLite hafızasını GitHub Actions önbelleğinden (`actions/cache`) yükler, sabah özet bültenini günde tek sefer gönderir ve `10/10` kritik kararları anında bildirir.
 
 ---
 

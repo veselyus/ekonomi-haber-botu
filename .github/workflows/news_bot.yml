@@ -2,13 +2,16 @@ name: Economy & Banking News Bot
 
 on:
   schedule:
-    # 08:00 TSİ (05:00 UTC) -> Günlük Tek Sabah Bülteni (7-9 puanlık biriken tüm önemli haberler) + Tarama
-    - cron: "0 5 * * *"
-    # 11:00 TSİ (TÜİK verileri sonrası), 15:00 TSİ (TCMB/ECB sonrası), 22:30 TSİ (Fed/Not kararları sonrası)
-    # Gün içindeki bu 3 kontrolde normal haberler sessizce ertesi sabah 08:00 bültenine biriktirilir;
+    # Sabah Bülteni Yedekli Tetikleme Dizisi (07:46, 07:54, 08:03, 08:12, 08:22, 08:37 TSİ)
+    # Tam saat başı (:00/:30) yoğunluğundan kaçınır. İlk başarılı çalışma bülteni gönderip
+    # SQLite kilidini yazar; sonraki yedek tetiklemeler RSS/Gemini harcamadan 1 sn'de kapanır.
+    - cron: "46,54 4 * * *"
+    - cron: "3,12,22,37 5 * * *"
+    # Gün içi stratejik kontroller: 11:07 TSİ (TÜİK sonrası), 15:07 TSİ (TCMB/ECB sonrası), 22:37 TSİ (Fed/Not kararları sonrası)
+    # Gün içindeki bu 3 kontrolde normal haberler sessizce ertesi sabah bültenine biriktirilir;
     # yalnızca 10/10 puanlık olağanüstü kritik bir karar varsa anında alarm gönderilir.
-    - cron: "0 8,12 * * *"
-    - cron: "30 19 * * *"
+    - cron: "7 8,12 * * *"
+    - cron: "37 19 * * *"
 
   workflow_dispatch:
     inputs:
@@ -67,6 +70,7 @@ jobs:
             news-bot-sqlite-
 
       - name: Haber Botunu Çalıştır
+        id: run-bot-step
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -83,10 +87,23 @@ jobs:
             EXTRA_FLAGS="$EXTRA_FLAGS --reset-state"
           fi
           mkdir -p data
+          BEFORE_HASH=""
+          if [ -f data/news_state.db ]; then
+            BEFORE_HASH=$(sha256sum data/news_state.db | awk '{print $1}')
+          fi
           python main.py --mode "$MODE" $EXTRA_FLAGS
+          AFTER_HASH=""
+          if [ -f data/news_state.db ]; then
+            AFTER_HASH=$(sha256sum data/news_state.db | awk '{print $1}')
+          fi
+          if [ "$BEFORE_HASH" != "$AFTER_HASH" ]; then
+            echo "db_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "db_changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Güncel SQLite Veritabanını Önbelleğe Kaydet
-        if: always() && inputs.dry_run != true
+        if: always() && inputs.dry_run != true && steps.run-bot-step.outputs.db_changed != 'false'
         uses: actions/cache/save@v4
         with:
           path: data

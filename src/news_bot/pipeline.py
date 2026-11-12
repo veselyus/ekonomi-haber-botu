@@ -86,19 +86,31 @@ def select_balanced_candidates(
     return selected
 
 
+def is_morning_retry_window(now_utc: datetime | None = None) -> bool:
+    """
+    Return True during the 07:45-10:45 TSİ multi-trigger morning window.
+
+    Once one morning trigger succeeds in this window, subsequent backup triggers
+    fast-exit immediately without calling RSS feeds or the Gemini API.
+    """
+    local_dt = (now_utc or datetime.now(timezone.utc)).astimezone(TURKEY_TZ)
+    current_t = local_dt.timetz().replace(tzinfo=None)
+    return time(7, 45) <= current_t < time(10, 45)
+
+
 def determine_due_digest_slot(now_utc: datetime | None = None) -> str | None:
     """
-    Determine whether current Turkey time (UTC+3) falls inside the daily 08:00 morning digest window.
+    Determine whether current Turkey time (UTC+3) falls inside the daily morning digest window.
 
-    Using a 07:45-10:45 TSİ window ensures GitHub Actions cron queue delays never
-    cause a missed 08:00 morning bulletin, while keeping the rest of the day silent
-    except for extraordinary (10/10) critical alerts.
+    Using a 07:45-14:30 TSİ window ensures even severe multi-hour GitHub Actions cron
+    delays still deliver the morning bulletin once, while keeping afternoon/night runs
+    silent except for extraordinary (10/10) critical alerts.
     """
     local_dt = (now_utc or datetime.now(timezone.utc)).astimezone(TURKEY_TZ)
     current_t = local_dt.timetz().replace(tzinfo=None)
     date_prefix = local_dt.strftime("%Y-%m-%d")
 
-    if time(7, 45) <= current_t < time(10, 45):
+    if time(7, 45) <= current_t < time(14, 30):
         return f"{date_prefix}-morning"
     return None
 
@@ -335,8 +347,8 @@ class NewsPipeline:
         )
         return stats
 
-    def run_digest(self) -> int:
-        """Send queued important articles (score 7-8) as a categorized bulletin."""
+    def run_digest(self, now_utc: datetime | None = None) -> int:
+        """Send queued important articles (score 7-9) as a categorized bulletin."""
         pending = list(self._storage.get_pending_digest_articles())
         if self._dry_run and self._dry_run_digest_buffer:
             existing_ids = {x.raw.article_id for x in pending}
@@ -372,36 +384,62 @@ class NewsPipeline:
         if self._settings.include_market_snapshot:
             market_quotes = self._market_fetcher.fetch_snapshot()
 
+        has_deliverable_content = bool(
+            market_quotes or unique_pending or self._settings.send_empty_digest
+        )
         sent_ok = self._notifier.send_digest(
             unique_pending,
             market_quotes=market_quotes,
             send_empty=self._settings.send_empty_digest,
         )
-        if sent_ok and pending and not self._dry_run:
-            self._storage.mark_digest_sent([item.raw.article_id for item in pending])
-            logger.info(
-                "%d tekil haber bülten olarak gönderildi (%d kayıt işlendi).",
-                len(unique_pending),
-                len(pending),
+        if has_deliverable_content and not sent_ok:
+            logger.error(
+                "Bülten Telegram'a iletilemedi; bir sonraki yedek tetiklemede tekrar denenecek."
             )
-            return len(unique_pending)
+            return 0
+
+        if not self._dry_run:
+            if sent_ok and pending:
+                self._storage.mark_digest_sent([item.raw.article_id for item in pending])
+                logger.info(
+                    "%d tekil haber bülten olarak gönderildi (%d kayıt işlendi).",
+                    len(unique_pending),
+                    len(pending),
+                )
+            active_slot = determine_due_digest_slot(now_utc=now_utc)
+            if active_slot is not None:
+                self._storage.record_digest_slot_run(active_slot)
 
         return len(unique_pending) if (sent_ok and unique_pending) else 0
 
-    def run_auto(self, now_utc: datetime | None = None) -> None:
+    def run_auto(self, now_utc: datetime | None = None) -> bool:
         """
-        Scheduled cloud mode: always scan for critical alerts, and automatically
-        dispatch morning (08:30 TSİ) or evening (18:30 TSİ) digest once per window.
+        Scheduled cloud mode:
+        - During the 07:45-10:45 TSİ morning retry window, once the daily morning digest
+          has been delivered, exit immediately with zero RSS/Gemini overhead.
+        - Otherwise scan for news/critical alerts and dispatch the morning digest once per day.
+        Returns True if a scan ran, or False if fast-skipped as an already-completed backup trigger.
         """
-        self.run_scan()
         slot_key = determine_due_digest_slot(now_utc=now_utc)
+        if (
+            slot_key is not None
+            and is_morning_retry_window(now_utc=now_utc)
+            and not self._dry_run
+            and self._storage.has_digest_slot_run(slot_key)
+        ):
+            logger.info(
+                "Sabah bülteni (%s) zaten başarıyla gönderildi; yedek tetikleme tarama yapmadan sonlandırılıyor.",
+                slot_key,
+            )
+            return False
+
+        self.run_scan()
         if slot_key is None:
-            return
+            return True
         if not self._dry_run and self._storage.has_digest_slot_run(slot_key):
             logger.info("Bülten dilimi (%s) daha önce çalıştırıldı; atlanıyor.", slot_key)
-            return
+            return True
 
         logger.info("Bülten zaman dilimi aktif (%s); günlük özet hazırlanıyor...", slot_key)
-        self.run_digest()
-        if not self._dry_run:
-            self._storage.record_digest_slot_run(slot_key)
+        self.run_digest(now_utc=now_utc)
+        return True

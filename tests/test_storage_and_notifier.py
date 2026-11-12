@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from news_bot.cli import build_parser
+from news_bot.config import Settings
 from news_bot.models import (
     ArticleEvaluation,
     EnrichedArticle,
@@ -18,7 +19,13 @@ from news_bot.notifier import (
     format_digest_messages,
     parse_chat_ids,
 )
-from news_bot.pipeline import determine_due_digest_slot, select_balanced_candidates
+from news_bot.pipeline import (
+    NewsPipeline,
+    ScanStats,
+    determine_due_digest_slot,
+    is_morning_retry_window,
+    select_balanced_candidates,
+)
 from news_bot.storage import ArticleStorage
 
 
@@ -100,16 +107,33 @@ def test_storage_digest_lifecycle_and_slot_tracking(tmp_path: Path) -> None:
 
 
 def test_determine_due_digest_slot_respects_turkey_timezone() -> None:
-    # 05:00 UTC == 08:00 TSİ -> Daily 08:00 Morning digest window
+    # 04:46 UTC == 07:46 TSİ -> First morning retry trigger
+    assert (
+        determine_due_digest_slot(datetime(2026, 11, 11, 4, 46, tzinfo=timezone.utc))
+        == "2026-11-11-morning"
+    )
+    assert is_morning_retry_window(datetime(2026, 11, 11, 4, 46, tzinfo=timezone.utc)) is True
+
+    # 05:00 UTC == 08:00 TSİ -> Daily morning digest window
     assert (
         determine_due_digest_slot(datetime(2026, 11, 11, 5, 0, tzinfo=timezone.utc))
         == "2026-11-11-morning"
     )
-    # 06:30 UTC == 09:30 TSİ -> Still inside delayed-cron morning grace window
+    # 06:30 UTC == 09:30 TSİ -> Still inside delayed-cron morning retry window
     assert (
         determine_due_digest_slot(datetime(2026, 11, 11, 6, 30, tzinfo=timezone.utc))
         == "2026-11-11-morning"
     )
+    assert is_morning_retry_window(datetime(2026, 11, 11, 6, 30, tzinfo=timezone.utc)) is True
+
+    # 08:07 UTC == 11:07 TSİ -> Outside fast-skip window (so intraday scan runs),
+    # but still inside extended morning catch-up window if all morning crons dropped
+    assert is_morning_retry_window(datetime(2026, 11, 11, 8, 7, tzinfo=timezone.utc)) is False
+    assert (
+        determine_due_digest_slot(datetime(2026, 11, 11, 8, 7, tzinfo=timezone.utc))
+        == "2026-11-11-morning"
+    )
+
     # 12:00 UTC == 15:00 TSİ -> Intraday critical check only (no digest)
     assert (
         determine_due_digest_slot(datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc))
@@ -120,6 +144,75 @@ def test_determine_due_digest_slot_respects_turkey_timezone() -> None:
         determine_due_digest_slot(datetime(2026, 11, 11, 19, 30, tzinfo=timezone.utc))
         is None
     )
+
+
+def test_morning_backup_triggers_send_once_and_fast_skip_subsequent_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = Settings(
+        GEMINI_API_KEY="dummy-key",
+        TELEGRAM_BOT_TOKEN="dummy-token",
+        TELEGRAM_CHAT_ID="123456",
+        DATABASE_PATH=tmp_path / "state.db",
+        INCLUDE_MARKET_SNAPSHOT=False,
+    )
+    pipeline = NewsPipeline(settings, dry_run=False)
+
+    scan_calls = 0
+    digest_deliveries = 0
+    should_fail_delivery = True
+
+    def fake_run_scan() -> ScanStats:
+        nonlocal scan_calls
+        scan_calls += 1
+        item = _sample_enriched(
+            scan_calls,
+            category=NewsCategory.TR_ECONOMY,
+            score=8,
+            queued_for_digest=True,
+        )
+        pipeline._storage.save_articles([item])
+        return ScanStats(1, 0, 0, 1, 0, 1, 0)
+
+    def fake_send_digest(items, *, market_quotes=None, send_empty=False) -> bool:
+        nonlocal digest_deliveries
+        if should_fail_delivery:
+            return False
+        digest_deliveries += 1
+        return True
+
+    monkeypatch.setattr(pipeline, "run_scan", fake_run_scan)
+    monkeypatch.setattr(pipeline._notifier, "send_digest", fake_send_digest)
+
+    # 1) 07:46 TSİ (04:46 UTC): Simulate transient Telegram failure -> slot MUST NOT lock
+    t_0746 = datetime(2026, 11, 12, 4, 46, tzinfo=timezone.utc)
+    assert pipeline.run_auto(now_utc=t_0746) is True
+    assert scan_calls == 1
+    assert digest_deliveries == 0
+    assert pipeline._storage.has_digest_slot_run("2026-11-12-morning") is False
+
+    # 2) 07:54 TSİ (04:54 UTC): Backup trigger retries and succeeds -> locks morning slot
+    should_fail_delivery = False
+    t_0754 = datetime(2026, 11, 12, 4, 54, tzinfo=timezone.utc)
+    assert pipeline.run_auto(now_utc=t_0754) is True
+    assert scan_calls == 2
+    assert digest_deliveries == 1
+    assert pipeline._storage.has_digest_slot_run("2026-11-12-morning") is True
+
+    # 3) 08:03 & 08:12 TSİ: Subsequent backup triggers fast-skip without scanning or sending
+    t_0803 = datetime(2026, 11, 12, 5, 3, tzinfo=timezone.utc)
+    t_0812 = datetime(2026, 11, 12, 5, 12, tzinfo=timezone.utc)
+    assert pipeline.run_auto(now_utc=t_0803) is False
+    assert pipeline.run_auto(now_utc=t_0812) is False
+    assert scan_calls == 2
+    assert digest_deliveries == 1
+
+    # 4) 11:07 TSİ (08:07 UTC): Daytime scan DOES scan for 10/10 alerts, but does NOT resend digest
+    t_1107 = datetime(2026, 11, 12, 8, 7, tzinfo=timezone.utc)
+    assert pipeline.run_auto(now_utc=t_1107) is True
+    assert scan_calls == 3
+    assert digest_deliveries == 1
 
 
 def test_telegram_formatters_escape_html_and_chunk_long_digests() -> None:
